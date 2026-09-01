@@ -16,17 +16,15 @@ from telegram.ext import (
 from playwright.async_api import async_playwright
 from pygments.formatters import HtmlFormatter
 
-# استایل‌های تم روشن و تاریک برای کدهای برنامه‌نویسی
 CODE_STYLE_LIGHT = HtmlFormatter(style="friendly").get_style_defs('.codehilite')
 CODE_STYLE_DARK = HtmlFormatter(style="monokai").get_style_defs('.codehilite')
 
-# قفل همزمانی، نمونه مرورگر سراسری و تنظیمات کاربران
 conversion_lock = asyncio.Lock()
 global_browser = None
 playwright_instance = None
-user_themes = {}        # {chat_id: 'light' | 'dark'}
-user_orientations = {}  # {chat_id: 'portrait' | 'landscape'}
-user_compact_modes = {} # {chat_id: True | False}
+user_themes = {}        
+user_orientations = {}  
+user_compact_modes = {} 
 
 def run_dummy_server():
     port = int(os.environ.get("PORT", 8080))
@@ -69,19 +67,25 @@ HTML_TEMPLATE = """
             --table-even: #161b22;
         }
 
+        /* کنترل رنگ پس‌زمینه و حاشیه‌ها در سطح صفحه فیزیکی PDF */
+        @page {
+            size: letter {{PAGE_ORIENTATION}};
+            margin: {{PAGE_MARGIN}};
+            background-color: var(--bg-body);
+        }
+
         body {
             background-color: var(--bg-body);
             font-family: 'Inter', 'Vazirmatn', -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
             color: var(--text-main);
             line-height: 1.7;
-            padding: 10px 25px;
+            padding: 0;
+            margin: 0;
             font-size: 15px;
             letter-spacing: -0.01em;
         }
 
-        /* حالت فشرده (Compact Mode) */
         body.compact-mode {
-            padding: 5px 15px;
             font-size: 13.5px;
             line-height: 1.45;
         }
@@ -252,9 +256,15 @@ async def generate_pdf_output(md_text, output_pdf_path, theme="light", orientati
         classes.append("compact-mode")
     body_classes = " ".join(classes)
     
+    # تنظیم ابعاد و حاشیه‌ها در CSS به جای پلی‌رایت برای پوشش کامل رنگ پس‌زمینه
+    page_margin = "12mm 12mm" if compact else "20mm 20mm"
+    page_orientation = "landscape" if orientation == "landscape" else "portrait"
+    
     full_html = HTML_TEMPLATE.replace('/* PYGMENTS_INJECTION */', code_css)
     full_html = full_html.replace('{{BODY_CLASSES}}', body_classes)
     full_html = full_html.replace('{{content}}', html_content)
+    full_html = full_html.replace('{{PAGE_MARGIN}}', page_margin)
+    full_html = full_html.replace('{{PAGE_ORIENTATION}}', page_orientation)
     
     with tempfile.NamedTemporaryFile(delete=False, suffix='.html', mode='w', encoding='utf-8') as f:
         f.write(full_html)
@@ -272,7 +282,6 @@ async def generate_pdf_output(md_text, output_pdf_path, theme="light", orientati
             }
         """)
         
-        is_landscape = (orientation == "landscape")
         footer_color = "#6e7681" if theme == "dark" else "#8c959f"
         footer_html = f"""
         <div style="font-family: 'Inter', -apple-system, sans-serif; font-size: 10px; width: 100%; text-align: center; color: {footer_color}; padding-bottom: 5px;">
@@ -280,17 +289,14 @@ async def generate_pdf_output(md_text, output_pdf_path, theme="light", orientati
         </div>
         """
         
-        margin_config = {"top": "12mm", "bottom": "18mm", "left": "12mm", "right": "12mm"} if compact else {"top": "20mm", "bottom": "25mm", "left": "20mm", "right": "20mm"}
-        
+        # حاشیه‌های پلی‌رایت روی صفر تنظیم می‌شوند تا CSS کلاً کنترل صفحه و حاشیه‌ها را به دست بگیرد
         await page.pdf(
             path=output_pdf_path, 
-            format="Letter", 
-            landscape=is_landscape,
             print_background=True,
             display_header_footer=True,
             header_template="<div></div>",
             footer_template=footer_html,
-            margin=margin_config
+            margin={"top": "0px", "bottom": "0px", "left": "0px", "right": "0px"}
         )
     finally:
         await page.close()
