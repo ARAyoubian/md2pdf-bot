@@ -5,13 +5,14 @@ import markdown
 import threading
 import asyncio
 from http.server import BaseHTTPRequestHandler, HTTPServer
-from telegram import Update
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
     Application,
     MessageHandler,
     filters,
     ContextTypes,
-    CommandHandler
+    CommandHandler,
+    CallbackQueryHandler
 )
 from playwright.async_api import async_playwright
 from pygments.formatters import HtmlFormatter
@@ -67,7 +68,6 @@ HTML_TEMPLATE = """
             --table-even: #161b22;
         }
 
-        /* کنترل رنگ پس‌زمینه و حاشیه‌ها در سطح صفحه فیزیکی PDF */
         @page {
             size: letter {{PAGE_ORIENTATION}};
             margin: {{PAGE_MARGIN}};
@@ -83,6 +83,12 @@ HTML_TEMPLATE = """
             margin: 0;
             font-size: 15px;
             letter-spacing: -0.01em;
+        }
+
+        /* بهینه‌سازی حالت افقی (Landscape) */
+        body.landscape-mode {
+            max-width: 900px;
+            margin: 0 auto;
         }
 
         body.compact-mode {
@@ -254,9 +260,10 @@ async def generate_pdf_output(md_text, output_pdf_path, theme="light", orientati
         classes.append("dark-theme")
     if compact:
         classes.append("compact-mode")
+    if orientation == "landscape":
+        classes.append("landscape-mode")
     body_classes = " ".join(classes)
     
-    # تنظیم ابعاد و حاشیه‌ها در CSS به جای پلی‌رایت برای پوشش کامل رنگ پس‌زمینه
     page_margin = "12mm 12mm" if compact else "20mm 20mm"
     page_orientation = "landscape" if orientation == "landscape" else "portrait"
     
@@ -289,7 +296,6 @@ async def generate_pdf_output(md_text, output_pdf_path, theme="light", orientati
         </div>
         """
         
-        # حاشیه‌های پلی‌رایت روی صفر تنظیم می‌شوند تا CSS کلاً کنترل صفحه و حاشیه‌ها را به دست بگیرد
         await page.pdf(
             path=output_pdf_path, 
             print_background=True,
@@ -303,46 +309,54 @@ async def generate_pdf_output(md_text, output_pdf_path, theme="light", orientati
         if os.path.exists(temp_html_path):
             os.remove(temp_html_path)
 
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    chat_id = update.effective_chat.id
+def get_settings_keyboard(chat_id):
     theme = user_themes.get(chat_id, "light")
     orientation = user_orientations.get(chat_id, "portrait")
     compact = user_compact_modes.get(chat_id, False)
     
-    status_compact = "فعال (Compact) 📦" if compact else "غیرفعال (Normal) 📖"
+    theme_btn = "🌙 تم: تاریک" if theme == "dark" else "☀️ تم: روشن"
+    orient_btn = "📑 جهت: افقی" if orientation == "landscape" else "📄 جهت: عمودی"
+    compact_btn = "📦 حالت: فشرده" if compact else "📖 حالت: عادی"
     
-    await update.message.reply_text(
-        f"سلام! 👋\n\n"
-        f"📄 فایل `.md` یا متن خود را بفرستید تا فوراً به PDF تبدیل شود.\n\n"
-        f"⚙️ تنظیمات فعلی شما:\n"
-        f"• تم: **{theme.upper()}** (/light | /dark)\n"
-        f"• جهت صفحه: **{orientation.upper()}** (/portrait | /landscape)\n"
-        f"• حالت فشرده: **{status_compact}** (/compact | /normal)"
+    keyboard = [
+        [InlineKeyboardButton(theme_btn, callback_data="toggle_theme"),
+         InlineKeyboardButton(orient_btn, callback_data="toggle_orient")],
+        [InlineKeyboardButton(compact_btn, callback_data="toggle_compact")]
+    ]
+    return InlineKeyboardMarkup(keyboard)
+
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    chat_id = update.effective_chat.id
+    reply_markup = get_settings_keyboard(chat_id)
+    
+    text = (
+        "سلام! 👋\n\n"
+        "📄 فایل `.md` یا `.txt` خود و یا متن دلخواهتان را بفرستید تا فوراً به PDF تبدیل شود.\n\n"
+        "⚙️ تنظیمات خروجی خود را از طریق دکمه‌های زیر تغییر دهید:"
     )
+    
+    if update.message:
+        await update.message.reply_text(text, reply_markup=reply_markup)
+    elif update.callback_query:
+        await update.callback_query.message.edit_text(text, reply_markup=reply_markup)
 
-async def set_light(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_themes[update.effective_chat.id] = "light"
-    await update.message.reply_text("☀️ تم خروجی به **روشن (Light)** تغییر یافت.")
-
-async def set_dark(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_themes[update.effective_chat.id] = "dark"
-    await update.message.reply_text("🌙 تم خروجی به **تاریک (Dark)** تغییر یافت.")
-
-async def set_portrait(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_orientations[update.effective_chat.id] = "portrait"
-    await update.message.reply_text("📄 جهت صفحه به **عمودی (Portrait)** تغییر یافت.")
-
-async def set_landscape(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_orientations[update.effective_chat.id] = "landscape"
-    await update.message.reply_text("📑 جهت صفحه به **افقی (Landscape)** تغییر یافت.")
-
-async def set_compact(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_compact_modes[update.effective_chat.id] = True
-    await update.message.reply_text("📦 **حالت فشرده (Compact Mode) فعال شد.**")
-
-async def set_normal(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_compact_modes[update.effective_chat.id] = False
-    await update.message.reply_text("📖 **حالت عادی (Normal Mode) فعال شد.**")
+async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    chat_id = update.effective_chat.id
+    
+    data = query.data
+    if data == "toggle_theme":
+        current = user_themes.get(chat_id, "light")
+        user_themes[chat_id] = "dark" if current == "light" else "light"
+    elif data == "toggle_orient":
+        current = user_orientations.get(chat_id, "portrait")
+        user_orientations[chat_id] = "landscape" if current == "portrait" else "portrait"
+    elif data == "toggle_compact":
+        current = user_compact_modes.get(chat_id, False)
+        user_compact_modes[chat_id] = not current
+        
+    await start(update, context)
 
 async def process_conversion(update: Update, context: ContextTypes.DEFAULT_TYPE, md_text: str, file_title: str):
     chat_id = update.effective_chat.id
@@ -385,17 +399,18 @@ async def process_conversion(update: Update, context: ContextTypes.DEFAULT_TYPE,
 
 async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
     doc = update.message.document
-    if not doc.file_name.lower().endswith('.md'):
-        await update.message.reply_text("⛔ لطفاً فقط فایل `.md` یا متن بفرستید.")
+    filename = doc.file_name.lower()
+    if not (filename.endswith('.md') or filename.endswith('.txt')):
+        await update.message.reply_text("⛔ لطفاً فقط فایل `.md` یا `.txt` بفرستید.")
         return
         
     file = await context.bot.get_file(doc.file_id)
-    md_temp = f"dl_{doc.file_id}.md"
-    await file.download_to_drive(md_temp)
+    temp_path = f"dl_{doc.file_id}.tmp"
+    await file.download_to_drive(temp_path)
     
-    with open(md_temp, 'r', encoding='utf-8') as f:
+    with open(temp_path, 'r', encoding='utf-8') as f:
         md_text = f.read()
-    os.remove(md_temp)
+    os.remove(temp_path)
     
     file_title = doc.file_name.rsplit('.', 1)[0]
     await process_conversion(update, context, md_text, file_title)
@@ -417,12 +432,7 @@ if __name__ == '__main__':
         app = Application.builder().token(TOKEN).build()
         
         app.add_handler(CommandHandler("start", start))
-        app.add_handler(CommandHandler("light", set_light))
-        app.add_handler(CommandHandler("dark", set_dark))
-        app.add_handler(CommandHandler("portrait", set_portrait))
-        app.add_handler(CommandHandler("landscape", set_landscape))
-        app.add_handler(CommandHandler("compact", set_compact))
-        app.add_handler(CommandHandler("normal", set_normal))
+        app.add_handler(CallbackQueryHandler(button_callback))
         
         app.add_handler(MessageHandler(filters.Document.ALL, handle_document))
         app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
