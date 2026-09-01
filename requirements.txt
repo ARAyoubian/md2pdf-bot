@@ -1,0 +1,5 @@
+python-telegram-bot
+markdown
+python-markdown-math
+playwright
+
