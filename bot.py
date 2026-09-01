@@ -1,9 +1,24 @@
 import os
 import tempfile
 import markdown
+import threading
+import asyncio
+from http.server import BaseHTTPRequestHandler, HTTPServer
 from telegram import Update
 from telegram.ext import Application, MessageHandler, filters, ContextTypes, CommandHandler
 from playwright.async_api import async_playwright
+
+# یک وب‌سرور بسیار سبک برای بیدار نگه داشتن سرور رایگان
+def run_dummy_server():
+    port = int(os.environ.get("PORT", 8080))
+    class RequestHandler(BaseHTTPRequestHandler):
+        def do_GET(self):
+            self.send_response(200)
+            self.send_header('Content-type', 'text/html; charset=utf-8')
+            self.end_headers()
+            self.wfile.write(b"Bot is Running successfully on Back4App!")
+    server = HTTPServer(('0.0.0.0', port), RequestHandler)
+    server.serve_forever()
 
 HTML_TEMPLATE = """
 <!DOCTYPE html>
@@ -37,19 +52,23 @@ HTML_TEMPLATE = """
 async def generate_pdf(md_text, output_pdf_path):
     html_content = markdown.markdown(md_text, extensions=['fenced_code', 'tables', 'nl2br', 'mdx_math'])
     full_html = HTML_TEMPLATE.replace('{{content}}', html_content)
-
+    
     with tempfile.NamedTemporaryFile(delete=False, suffix='.html', mode='w', encoding='utf-8') as f:
         f.write(full_html)
         temp_html_path = f.name
-
+        
     async with async_playwright() as p:
-        browser = await p.chromium.launch(headless=True)
+        # آرگومان‌های بهینه‌سازی مصرف رم برای سرور رایگان
+        browser = await p.chromium.launch(
+            headless=True,
+            args=['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage', '--disable-gpu']
+        )
         page = await browser.new_page()
         await page.goto(f"file://{temp_html_path}")
         await page.wait_for_selector('#mathjax-done', timeout=15000)
         await page.pdf(path=output_pdf_path, format="A4", print_background=True, margin={"top": "20mm", "bottom": "20mm", "left": "20mm", "right": "20mm"})
         await browser.close()
-
+        
     os.remove(temp_html_path)
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -60,35 +79,42 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not document.file_name.lower().endswith('.md'):
         await update.message.reply_text("⛔ لطفاً فقط فایل `.md` بفرست.")
         return
-
+        
     status_msg = await update.message.reply_text("📥 در حال پردازش فایل...")
     try:
         file = await context.bot.get_file(document.file_id)
         md_path, pdf_path = f"{document.file_id}.md", f"{document.file_id}.pdf"
         await file.download_to_drive(md_path)
-
+        
         with open(md_path, 'r', encoding='utf-8') as f:
             md_text = f.read()
-
+            
         await generate_pdf(md_text, pdf_path)
-        
         await context.bot.edit_message_text(chat_id=update.message.chat_id, message_id=status_msg.message_id, text="✅ فایل آماده شد!")
         
         with open(pdf_path, 'rb') as f:
             await update.message.reply_document(document=f, filename=document.file_name.replace('.md', '.pdf'))
-
+            
     except Exception as e:
         await context.bot.edit_message_text(chat_id=update.message.chat_id, message_id=status_msg.message_id, text=f"❌ خطایی رخ داد: {str(e)}")
     finally:
         if os.path.exists(md_path): os.remove(md_path)
         if os.path.exists(pdf_path): os.remove(pdf_path)
 
-if __name__ == '__main__':
+def run_telegram_bot():
     TOKEN = os.getenv("BOT_TOKEN")
     if not TOKEN:
-        raise ValueError("خطا: توکن یافت نشد! متغیر محیطی BOT_TOKEN در سرور تنظیم نشده است.")
-    
+        print("Error: BOT_TOKEN is missing!")
+        return
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
     app = Application.builder().token(TOKEN).build()
     app.add_handler(CommandHandler("start", start))
     app.add_handler(MessageHandler(filters.Document.ALL, handle_document))
     app.run_polling()
+
+if __name__ == '__main__':
+    # اجرای تلگرام در پس‌زمینه
+    threading.Thread(target=run_telegram_bot, daemon=True).start()
+    # روشن کردن سرور وب
+    run_dummy_server()
