@@ -397,7 +397,6 @@ async def generate_pdf_output(md_text, output_pdf_path, orientation="portrait", 
         await page.close()
         if os.path.exists(temp_html_path):
             os.remove(temp_html_path)
-        # آزاد سازی رم پایتون برای پایداری در سرور ۲۵۶ مگابایتی
         gc.collect()
 
 def get_settings_keyboard(chat_id):
@@ -422,7 +421,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     text = (
         "سلام! 👋\n\n"
-        "📄 فایل `.md`/`.txt`، متن دلخواه و یا فایل فشرده `.zip` خود را بفرستید.\n\n"
+        "📄 فایل `.md`/`.txt`، متن دلخواه و یا فایل فشرده `.zip` خود را بفرستید.\n"
+        "💡 نکته: در فایل‌های ZIP، نام فایل PDF خروجی دقیقا مطابق با نام فایل مارک‌داون متناظر (یا هشتگ داخلی آن) خواهد بود.\n\n"
         "⚙️ تنظیمات خروجی خود را از طریق دکمه‌های زیر مدیریت کنید:"
     )
     
@@ -449,15 +449,14 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
     await start(update, context)
 
-async def process_conversion(update: Update, context: ContextTypes.DEFAULT_TYPE, md_text: str, custom_title=None):
+async def process_conversion(update: Update, context: ContextTypes.DEFAULT_TYPE, md_text: str, file_default_name=None):
     chat_id = update.effective_chat.id
     orientation = get_user_setting(chat_id, "orientation", "portrait")
     compact = get_user_setting(chat_id, "compact", False)
     columns = get_user_setting(chat_id, "columns", 1)
     
-    file_title, md_text = extract_title_and_hashtag(md_text, default_name=f"Note_{update.message.message_id}")
-    if custom_title:
-        file_title = custom_title
+    default_name = file_default_name if file_default_name else f"Note_{update.message.message_id}"
+    file_title, md_text = extract_title_and_hashtag(md_text, default_name=default_name)
     
     if len(md_text) > 5000:
         status_msg = await update.message.reply_text("⚠️ حجم متن بالا است. پردازش چند ثانیه زمان می‌برد...")
@@ -529,9 +528,11 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         try:
                             with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
                                 content = f.read()
-                            title, clean_content = extract_title_and_hashtag(content, default_name=file_name.rsplit('.', 1)[0])
                             
-                            # ساخت فایل PDF موقت با مسیر مطلق امن
+                            # نام پیش‌فرض فایل برابر با نام فایل متناظر داخل زیپ (بدون پسوند)
+                            base_name = file_name.rsplit('.', 1)[0]
+                            title, clean_content = extract_title_and_hashtag(content, default_name=base_name)
+                            
                             out_pdf = os.path.abspath(f"{title}_{os.getpid()}.pdf")
                             
                             async with conversion_lock:
@@ -552,7 +553,6 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 with open(zip_out_name, 'rb') as z_file:
                     await update.message.reply_document(document=z_file, filename="Converted_Files.zip")
                 
-                # پاک‌سازی فایل‌های موقت ZIP و PDFها
                 if os.path.exists(zip_out_name):
                     os.remove(zip_out_name)
                 for pdf_abs_path, _ in pdf_files:
@@ -572,7 +572,8 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else:
         with open(temp_path, 'r', encoding='utf-8', errors='ignore') as f:
             md_text = f.read()
-        await process_conversion(update, context, md_text)
+        base_name = doc.file_name.rsplit('.', 1)[0]
+        await process_conversion(update, context, md_text, file_default_name=base_name)
         
     if os.path.exists(temp_path):
         os.remove(temp_path)
