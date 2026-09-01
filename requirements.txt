@@ -3,4 +3,3 @@ markdown
 python-markdown-math
 playwright
 Pygments
-aiohttp
