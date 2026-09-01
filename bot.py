@@ -298,14 +298,16 @@ def clean_filename(text):
     return re.sub(r'[\\/*?:"<>|#]', '', text).strip()[:40]
 
 def resolve_filename_and_content(text, default_name="Document"):
+    # قانون اول: نام فایل اصلی است. هشتگ فقط در صورت تمایل دستی نام را عوض می‌کند.
+    title = clean_filename(default_name)
     hashtag_match = re.search(r'#([رعشگپتثجحخدذرزسشصطظعغفقکلمنوهیژآإأؤةءچپگژ۱۲۳۴۵۶۷۸۹۰a-zA-Z0-9_]+)', text)
     if hashtag_match:
         tag_name = hashtag_match.group(1).strip()
         if tag_name:
-            clean_text = text.replace(f"#{tag_name}", "").strip()
-            return clean_filename(tag_name), clean_text
+            title = clean_filename(tag_name)
+            text = text.replace(f"#{tag_name}", "").strip()
 
-    return clean_filename(default_name), text
+    return title, text
 
 async def init_browser():
     global global_browser, playwright_instance
@@ -419,7 +421,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = (
         "سلام! 👋\n\n"
         "📄 فایل `.md`/`.txt`، متن دلخواه و یا فایل فشرده `.zip` خود را بفرستید.\n"
-        "💡 نکته: نام فایل خروجی PDF دقیقا مطابق با نام فایل اصلی شما (یا هشتگ سفارشی داخلی) تنظیم می‌شود.\n\n"
+        "💡 نکته: نام فایل خروجی PDF دقیقا مطابق با نام فایل اصلی شما تنظیم می‌شود.\n\n"
         "⚙️ تنظیمات خروجی خود را از طریق دکمه‌های زیر مدیریت کنید:"
     )
     
