@@ -2,13 +2,12 @@ import os
 import tempfile
 import markdown
 import threading
-import asyncio
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from telegram import Update
 from telegram.ext import Application, MessageHandler, filters, ContextTypes, CommandHandler
 from playwright.async_api import async_playwright
 
-# یک وب‌سرور بسیار سبک برای بیدار نگه داشتن سرور رایگان
+# سرور وب در پس‌زمینه برای بیدار نگه داشتن سرور رایگان
 def run_dummy_server():
     port = int(os.environ.get("PORT", 8080))
     class RequestHandler(BaseHTTPRequestHandler):
@@ -18,6 +17,7 @@ def run_dummy_server():
             self.end_headers()
             self.wfile.write(b"Bot is Running successfully on Back4App!")
     server = HTTPServer(('0.0.0.0', port), RequestHandler)
+    print(f"Web server is running on port {port}...")
     server.serve_forever()
 
 HTML_TEMPLATE = """
@@ -58,7 +58,7 @@ async def generate_pdf(md_text, output_pdf_path):
         temp_html_path = f.name
         
     async with async_playwright() as p:
-        # آرگومان‌های بهینه‌سازی مصرف رم برای سرور رایگان
+        # تنظیمات بهینه‌سازی شده برای مصرف کمِ رم در سرور رایگان
         browser = await p.chromium.launch(
             headless=True,
             args=['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage', '--disable-gpu']
@@ -101,20 +101,18 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if os.path.exists(md_path): os.remove(md_path)
         if os.path.exists(pdf_path): os.remove(pdf_path)
 
-def run_telegram_bot():
-    TOKEN = os.getenv("BOT_TOKEN")
-    if not TOKEN:
-        print("Error: BOT_TOKEN is missing!")
-        return
-    loop = asyncio.new_event_loop()
-    asyncio.set_event_loop(loop)
-    app = Application.builder().token(TOKEN).build()
-    app.add_handler(CommandHandler("start", start))
-    app.add_handler(MessageHandler(filters.Document.ALL, handle_document))
-    app.run_polling()
-
 if __name__ == '__main__':
-    # اجرای تلگرام در پس‌زمینه
-    threading.Thread(target=run_telegram_bot, daemon=True).start()
-    # روشن کردن سرور وب
-    run_dummy_server()
+    TOKEN = os.getenv("BOT_TOKEN")
+    
+    if not TOKEN:
+        print("❌ Error: BOT_TOKEN is missing! Please set it in Environment Variables.")
+    else:
+        # ۱. سرور وب را به پس‌زمینه می‌فرستیم
+        threading.Thread(target=run_dummy_server, daemon=True).start()
+        
+        # ۲. ربات تلگرام را در هسته اصلی اجرا می‌کنیم
+        print("✅ Starting Telegram Bot...")
+        app = Application.builder().token(TOKEN).build()
+        app.add_handler(CommandHandler("start", start))
+        app.add_handler(MessageHandler(filters.Document.ALL, handle_document))
+        app.run_polling()
