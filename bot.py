@@ -1,5 +1,7 @@
 import os
 import re
+import json
+import zipfile
 import tempfile
 import markdown
 import threading
@@ -22,8 +24,38 @@ CODE_STYLE_LIGHT = HtmlFormatter(style="friendly").get_style_defs('.codehilite')
 conversion_lock = asyncio.Lock()
 global_browser = None
 playwright_instance = None
-user_orientations = {}  
-user_compact_modes = {} 
+SETTINGS_FILE = "user_settings.json"
+
+def load_settings():
+    if os.path.exists(SETTINGS_FILE):
+        try:
+            with open(SETTINGS_FILE, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except Exception:
+            return {}
+    return {}
+
+def save_settings(settings):
+    try:
+        with open(SETTINGS_FILE, "w", encoding="utf-8") as f:
+            json.dump(settings, f)
+    except Exception:
+        pass
+
+user_all_settings = load_settings()
+
+def get_user_setting(chat_id, key, default):
+    str_id = str(chat_id)
+    if str_id in user_all_settings and key in user_all_settings[str_id]:
+        return user_all_settings[str_id][key]
+    return default
+
+def set_user_setting(chat_id, key, value):
+    str_id = str(chat_id)
+    if str_id not in user_all_settings:
+        user_all_settings[str_id] = {}
+    user_all_settings[str_id][key] = value
+    save_settings(user_all_settings)
 
 def run_dummy_server():
     port = int(os.environ.get("PORT", 8080))
@@ -54,6 +86,11 @@ HTML_TEMPLATE = """
             --border-color: #d0d7de;
             --accent-color: #0969da;
             --table-even: #fafbfc;
+            
+            --note-bg: #ddf4ff; --note-border: #0969da;
+            --warning-bg: #fff8c5; --warning-border: #9a6700;
+            --tip-bg: #dafbe1; --tip-border: #1a7f37;
+            --important-bg: #ffebe9; --important-border: #cf222e;
         }
 
         @page {
@@ -71,6 +108,15 @@ HTML_TEMPLATE = """
             margin: 0;
             font-size: 15px;
             letter-spacing: -0.01em;
+        }
+
+        /* حالت دو ستونی (Multi-Column Layout) */
+        body.columns-2 {
+            column-count: 2;
+            column-gap: 25px;
+        }
+        body.columns-2 h1 {
+            column-span: all;
         }
 
         h1 {
@@ -169,14 +215,19 @@ HTML_TEMPLATE = """
             background-color: var(--table-even);
         }
 
+        /* کادرهای رنگی پیشرفته (Callout Boxes) */
         blockquote {
             margin: 16px 0;
-            padding: 4px 18px;
-            color: var(--text-muted);
+            padding: 12px 18px;
+            color: var(--text-main);
             border-inline-start: 4px solid var(--accent-color);
             background: var(--bg-code);
             border-radius: 0 6px 6px 0;
         }
+        blockquote.callout-note { background-color: var(--note-bg); border-left-color: var(--note-border); }
+        blockquote.callout-warning { background-color: var(--warning-bg); border-left-color: var(--warning-border); }
+        blockquote.callout-tip { background-color: var(--tip-bg); border-left-color: var(--tip-border); }
+        blockquote.callout-important { background-color: var(--important-bg); border-left-color: var(--important-border); }
 
         hr {
             height: 1px;
@@ -195,7 +246,6 @@ HTML_TEMPLATE = """
         .toc ul { padding-inline-start: 20px; margin: 5px 0; }
         .toc a { color: var(--accent-color); text-decoration: none; }
 
-        /* استایل‌های پیشرفته برای رندر روان فرمول‌ها در جداول و لیست‌ها */
         mjx-container {
             overflow-x: auto;
             overflow-y: hidden;
@@ -209,7 +259,6 @@ HTML_TEMPLATE = """
         /* PYGMENTS_INJECTION */
     </style>
     
-    <!-- تنظیمات پیشرفته و بهینه‌شده MathJax برای جداول، لیست‌ها و بلوک‌های چندخطی -->
     <script>
         window.MathJax = {
             tex: {
@@ -234,17 +283,28 @@ HTML_TEMPLATE = """
 </html>
 """
 
+def process_callouts(md_text):
+    # پردازش بلوک‌های یادداشت و اخطار مانند [!NOTE]
+    md_text = re.sub(r'>\s*\[!NOTE\]', '<div class="callout-note-marker"></div>', md_text)
+    md_text = re.sub(r'>\s*\[!WARNING\]', '<div class="callout-warning-marker"></div>', md_text)
+    md_text = re.sub(r'>\s*\[!TIP\]', '<div class="callout-tip-marker"></div>', md_text)
+    md_text = re.sub(r'>\s*\[!IMPORTANT\]', '<div class="callout-important-marker"></div>', md_text)
+    
+    # تبدیل به کلاس‌های استایل بلاک‌کوت
+    md_text = md_text.replace('<div class="callout-note-marker"></div>', '<blockquote><strong>📌 نکته:</strong>')
+    md_text = md_text.replace('<div class="callout-warning-marker"></div>', '<blockquote><strong>⚠️ هشدار:</strong>')
+    md_text = md_text.replace('<div class="callout-tip-marker"></div>', '<blockquote><strong>💡 پیشنهاد:</strong>')
+    md_text = md_text.replace('<div class="callout-important-marker"></div>', '<blockquote><strong>🔥 مهم:</strong>')
+    return md_text
+
 def extract_title_and_hashtag(text, default_name="Document"):
-    # استخراج هشتگ به عنوان نام فایل خروجی (مثلاً #فصل_اول)
     hashtag_match = re.search(r'#([رعشگپتثجحخدذرزسشصطظعغفقکلمنوهیژآإأؤةءچپگژ۱۲۳۴۵۶۷۸۹۰a-zA-Z0-9_]+)', text)
     if hashtag_match:
         tag_name = hashtag_match.group(1).strip()
         if tag_name:
-            # حذف هشتگ از متن اصلی تا داخل PDF چاپ نشود
             clean_text = text.replace(f"#{tag_name}", "").strip()
             return tag_name, clean_text
 
-    # استخراج اولین هدینگ سند
     match = re.search(r'^#\s+(.+)$', text, re.MULTILINE)
     if match:
         clean = re.sub(r'[\\/*?:"<>|#]', '', match.group(1)).strip()
@@ -263,8 +323,10 @@ async def init_browser():
         )
         print("✅ Global Browser Instance Initialized.")
 
-async def generate_pdf_output(md_text, output_pdf_path, orientation="portrait", compact=False):
+async def generate_pdf_output(md_text, output_pdf_path, orientation="portrait", compact=False, columns=1):
     await init_browser()
+    
+    md_text = process_callouts(md_text)
     
     configs = {
         'codehilite': {
@@ -284,6 +346,8 @@ async def generate_pdf_output(md_text, output_pdf_path, orientation="portrait", 
         classes.append("compact-mode")
     if orientation == "landscape":
         classes.append("landscape-mode")
+    if columns == 2:
+        classes.append("columns-2")
     body_classes = " ".join(classes)
     
     page_margin = "12mm 12mm" if compact else "20mm 20mm"
@@ -331,15 +395,18 @@ async def generate_pdf_output(md_text, output_pdf_path, orientation="portrait", 
             os.remove(temp_html_path)
 
 def get_settings_keyboard(chat_id):
-    orientation = user_orientations.get(chat_id, "portrait")
-    compact = user_compact_modes.get(chat_id, False)
+    orientation = get_user_setting(chat_id, "orientation", "portrait")
+    compact = get_user_setting(chat_id, "compact", False)
+    columns = get_user_setting(chat_id, "columns", 1)
     
     orient_btn = "📑 جهت: افقی" if orientation == "landscape" else "📄 جهت: عمودی"
     compact_btn = "📦 حالت: فشرده" if compact else "📖 حالت: عادی"
+    col_btn = "📰 ستون: دو ستونی" if columns == 2 else "📃 ستون: تک ستونی"
     
     keyboard = [
         [InlineKeyboardButton(orient_btn, callback_data="toggle_orient"),
-         InlineKeyboardButton(compact_btn, callback_data="toggle_compact")]
+         InlineKeyboardButton(compact_btn, callback_data="toggle_compact")],
+        [InlineKeyboardButton(col_btn, callback_data="toggle_cols")]
     ]
     return InlineKeyboardMarkup(keyboard)
 
@@ -349,9 +416,9 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     text = (
         "سلام! 👋\n\n"
-        "📄 فایل `.md`/`.txt` یا متن دلخواهتان را بفرستید تا فوراً به PDF تبدیل شود.\n"
-        "💡 نکته: برای نام‌گذاری سفارشی فایل خروجی، کافیست یک هشتگ مثل `#فصل_اول` در متن بگذارید.\n\n"
-        "⚙️ تنظیمات خروجی خود را از طریق دکمه‌های زیر تغییر دهید:"
+        "📄 فایل `.md`/`.txt`، متن دلخواه و یا حتی فایل فشرده `.zip` حاوی چندین جزوه را بفرستید.\n"
+        "✨ قابلیت‌های جدید: کادرهای رنگی هشدار (`> [!NOTE]`) و قالب‌بندی دو ستونی!\n\n"
+        "⚙️ تنظیمات خروجی خود را از طریق دکمه‌های زیر مدیریت کنید:"
     )
     
     if update.message:
@@ -366,25 +433,29 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     data = query.data
     if data == "toggle_orient":
-        current = user_orientations.get(chat_id, "portrait")
-        user_orientations[chat_id] = "landscape" if current == "portrait" else "portrait"
+        current = get_user_setting(chat_id, "orientation", "portrait")
+        set_user_setting(chat_id, "orientation", "landscape" if current == "portrait" else "portrait")
     elif data == "toggle_compact":
-        current = user_compact_modes.get(chat_id, False)
-        user_compact_modes[chat_id] = not current
+        current = get_user_setting(chat_id, "compact", False)
+        set_user_setting(chat_id, "compact", not current)
+    elif data == "toggle_cols":
+        current = get_user_setting(chat_id, "columns", 1)
+        set_user_setting(chat_id, "columns", 2 if current == 1 else 1)
         
     await start(update, context)
 
-async def process_conversion(update: Update, context: ContextTypes.DEFAULT_TYPE, md_text: str):
+async def process_conversion(update: Update, context: ContextTypes.DEFAULT_TYPE, md_text: str, custom_title=None):
     chat_id = update.effective_chat.id
-    orientation = user_orientations.get(chat_id, "portrait")
-    compact = user_compact_modes.get(chat_id, False)
+    orientation = get_user_setting(chat_id, "orientation", "portrait")
+    compact = get_user_setting(chat_id, "compact", False)
+    columns = get_user_setting(chat_id, "columns", 1)
     
-    # استخراج هوشمند نام فایل از هشتگ یا هدینگ
     file_title, md_text = extract_title_and_hashtag(md_text, default_name=f"Note_{update.message.message_id}")
+    if custom_title:
+        file_title = custom_title
     
-    # هشدار هوشمند برای فایل‌ها و متن‌های حجیم
     if len(md_text) > 5000:
-        status_msg = await update.message.reply_text("⚠️ متن یا فایل شما حجیم است. پردازش ممکن است چند ثانیه بیشتر طول بکشد، لطفاً صبور باشید...")
+        status_msg = await update.message.reply_text("⚠️ حجم متن بالا است. پردازش چند ثانیه زمان می‌برد...")
     else:
         status_msg = await update.message.reply_text("⏳ در صف پردازش...")
     
@@ -392,13 +463,13 @@ async def process_conversion(update: Update, context: ContextTypes.DEFAULT_TYPE,
         await context.bot.edit_message_text(
             chat_id=chat_id,
             message_id=status_msg.message_id,
-            text=f"⚙️ در حال رندر فرمول‌های ریاضی و تولید فایل `{file_title}.pdf`..."
+            text=f"⚙️ در حال تولید فایل `{file_title}.pdf`..."
         )
         
         pdf_path = f"temp_{update.message.message_id}.pdf"
         
         try:
-            await generate_pdf_output(md_text, pdf_path, orientation=orientation, compact=compact)
+            await generate_pdf_output(md_text, pdf_path, orientation=orientation, compact=compact, columns=columns)
             
             await context.bot.edit_message_text(
                 chat_id=chat_id,
@@ -422,19 +493,69 @@ async def process_conversion(update: Update, context: ContextTypes.DEFAULT_TYPE,
 async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
     doc = update.message.document
     filename = doc.file_name.lower()
-    if not (filename.endswith('.md') or filename.endswith('.txt')):
-        await update.message.reply_text("⛔ لطفاً فقط فایل `.md` یا `.txt` بفرستید.")
+    
+    if not (filename.endswith('.md') or filename.endswith('.txt') or filename.endswith('.zip')):
+        await update.message.reply_text("⛔ لطفاً فقط فایل `.md`، `.txt` یا `.zip` بفرستید.")
         return
         
     file = await context.bot.get_file(doc.file_id)
     temp_path = f"dl_{doc.file_id}.tmp"
     await file.download_to_drive(temp_path)
     
-    with open(temp_path, 'r', encoding='utf-8') as f:
-        md_text = f.read()
-    os.remove(temp_path)
-    
-    await process_conversion(update, context, md_text)
+    if filename.endswith('.zip'):
+        status_msg = await update.message.reply_text("📦 استخراج و پردازش دسته‌جمعی فایل‌های ZIP...")
+        extracted_dir = f"extracted_{doc.file_id}"
+        os.makedirs(extracted_dir, exist_ok=True)
+        
+        try:
+            with zipfile.ZipFile(temp_path, 'r') as zip_ref:
+                zip_ref.extractall(extracted_dir)
+                
+            pdf_files = []
+            for root, dirs, files in os.walk(extracted_dir):
+                for file_name in files:
+                    if file_name.lower().endswith(('.md', '.txt')):
+                        file_path = os.path.join(root, file_name)
+                        with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
+                            content = f.read()
+                        title, clean_content = extract_title_and_hashtag(content, default_name=file_name.rsplit('.', 1)[0])
+                        out_pdf = f"{title}.pdf"
+                        
+                        chat_id = update.effective_chat.id
+                        orient = get_user_setting(chat_id, "orientation", "portrait")
+                        comp = get_user_setting(chat_id, "compact", False)
+                        cols = get_user_setting(chat_id, "columns", 1)
+                        
+                        async with conversion_lock:
+                            await generate_pdf_output(clean_content, out_pdf, orientation=orient, compact=comp, columns=cols)
+                        pdf_files.append(out_pdf)
+                        
+            if pdf_files:
+                zip_out_name = f"Batch_PDFs_{doc.file_id}.zip"
+                with zipfile.ZipFile(zip_out_name, 'w') as zip_out:
+                    for pdf in pdf_files:
+                        zip_out.write(pdf)
+                        os.remove(pdf)
+                        
+                with open(zip_out_name, 'rb') as z_file:
+                    await update.message.reply_document(document=z_file, filename="Converted_Files.zip")
+                os.remove(zip_out_name)
+                await context.bot.delete_message(chat_id=update.effective_chat.id, message_id=status_msg.message_id)
+            else:
+                await context.bot.edit_message_text(chat_id=update.effective_chat.id, message_id=status_msg.message_id, text="❌ هیچ فایل `.md` یا `.txt` معتبری داخل فایل ZIP یافت نشد.")
+        except Exception as e:
+            await context.bot.edit_message_text(chat_id=update.effective_chat.id, message_id=status_msg.message_id, text=f"❌ خطا در پردازش فایل ZIP: {str(e)}")
+        finally:
+            if os.path.exists(extracted_dir):
+                import shutil
+                shutil.rmtree(extracted_dir)
+    else:
+        with open(temp_path, 'r', encoding='utf-8', errors='ignore') as f:
+            md_text = f.read()
+        await process_conversion(update, context, md_text)
+        
+    if os.path.exists(temp_path):
+        os.remove(temp_path)
 
 async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text
