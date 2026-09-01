@@ -1,5 +1,7 @@
 import os
 import re
+import base64
+import aiohttp
 import tempfile
 import markdown
 import threading
@@ -16,15 +18,16 @@ from telegram.ext import (
 from playwright.async_api import async_playwright
 from pygments.formatters import HtmlFormatter
 
-# استایل‌های Pygments برای حالت روز و شب
+# استایل‌های تم روشن و تاریک برای کدهای برنامه‌نویسی
 CODE_STYLE_LIGHT = HtmlFormatter(style="friendly").get_style_defs('.codehilite')
 CODE_STYLE_DARK = HtmlFormatter(style="monokai").get_style_defs('.codehilite')
 
-# قفل همزمانی و متغیرهای سراسری مرورگر
+# قفل همزمانی، نمونه مرورگر سراسری و تنظیمات کاربران
 conversion_lock = asyncio.Lock()
 global_browser = None
 playwright_instance = None
-user_themes = {}  # ذخیره تنظیمات تم کاربران: {chat_id: 'light' | 'dark'}
+user_themes = {}        # {chat_id: 'light' | 'dark'}
+user_orientations = {}  # {chat_id: 'portrait' | 'landscape'}
 
 def run_dummy_server():
     port = int(os.environ.get("PORT", 8080))
@@ -48,7 +51,6 @@ HTML_TEMPLATE = """
     
     <style>
         :root {
-            /* تنظیمات تم روشن */
             --bg-body: #ffffff;
             --text-main: #1f2328;
             --text-muted: #656d76;
@@ -56,11 +58,9 @@ HTML_TEMPLATE = """
             --border-color: #d0d7de;
             --accent-color: #0969da;
             --table-even: #fafbfc;
-            --footer-color: #8c959f;
         }
 
         body.dark-theme {
-            /* تنظیمات تم تاریک */
             --bg-body: #0d1117;
             --text-main: #e6edf3;
             --text-muted: #8b949e;
@@ -68,7 +68,6 @@ HTML_TEMPLATE = """
             --border-color: #30363d;
             --accent-color: #58a6ff;
             --table-even: #161b22;
-            --footer-color: #6e7681;
         }
 
         body {
@@ -166,6 +165,9 @@ HTML_TEMPLATE = """
             border-radius: 8px;
             box-shadow: 0 2px 8px rgba(0,0,0,0.08);
             margin: 12px 0;
+            display: block;
+            margin-left: auto;
+            margin-right: auto;
         }
 
         hr {
@@ -175,7 +177,6 @@ HTML_TEMPLATE = """
             margin: 24px 0;
         }
 
-        /* فهرست مطالب (TOC) */
         .toc {
             background: var(--bg-code);
             border: 1px solid var(--border-color);
@@ -214,6 +215,26 @@ def extract_title(md_text, default_name="Document"):
             return clean[:40]
     return default_name
 
+async def embed_images_as_base64(md_text):
+    """دانلود خودکار عکس‌های لینک‌شده و تبدیل آن‌ها به Base64 برای پایداری آفلاین"""
+    pattern = r'!\[([^\]]*)\]\(([^)]+)\)'
+    matches = re.findall(pattern, md_text)
+    
+    for alt, url in matches:
+        if url.startswith('http://') or url.startswith('https://'):
+            try:
+                async with aiohttp.ClientSession() as session:
+                    async with session.get(url, timeout=6) as resp:
+                        if resp.status == 200:
+                            content = await resp.read()
+                            encoded = base64.b64encode(content).decode('utf-8')
+                            mime = resp.headers.get('Content-Type', 'image/jpeg')
+                            data_uri = f"data:{mime};base64,{encoded}"
+                            md_text = md_text.replace(f"]({url})", f"]({data_uri})")
+            except Exception:
+                pass  # در صورت خطا در دانلود، لینک اصلی حفظ می‌شود
+    return md_text
+
 async def init_browser():
     global global_browser, playwright_instance
     if not global_browser:
@@ -224,8 +245,11 @@ async def init_browser():
         )
         print("✅ Global Browser Instance Initialized.")
 
-async def generate_pdf(md_text, output_pdf_path, theme="light"):
+async def generate_outputs(md_text, output_pdf_path, output_png_path, theme="light", orientation="portrait"):
     await init_browser()
+    
+    # تبدیل عکس‌های اینترنتی به Base64
+    md_text = await embed_images_as_base64(md_text)
     
     configs = {
         'codehilite': {
@@ -263,6 +287,11 @@ async def generate_pdf(md_text, output_pdf_path, theme="light"):
             }
         """)
         
+        # گرفتن اسکرین‌شات سریع (پیش‌نمایش صفحه اول)
+        await page.set_viewport_size({"width": 800, "height": 1100})
+        await page.screenshot(path=output_png_path, type="png", full_page=False)
+        
+        is_landscape = (orientation == "landscape")
         footer_color = "#6e7681" if theme == "dark" else "#8c959f"
         footer_html = f"""
         <div style="font-family: 'Inter', -apple-system, sans-serif; font-size: 10px; width: 100%; text-align: center; color: {footer_color}; padding-bottom: 5px;">
@@ -273,6 +302,7 @@ async def generate_pdf(md_text, output_pdf_path, theme="light"):
         await page.pdf(
             path=output_pdf_path, 
             format="Letter", 
+            landscape=is_landscape,
             print_background=True,
             display_header_footer=True,
             header_template="<div></div>",
@@ -285,14 +315,17 @@ async def generate_pdf(md_text, output_pdf_path, theme="light"):
             os.remove(temp_html_path)
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    theme = user_themes.get(update.effective_chat.id, "light")
+    chat_id = update.effective_chat.id
+    theme = user_themes.get(chat_id, "light")
+    orientation = user_orientations.get(chat_id, "portrait")
+    
     await update.message.reply_text(
         f"سلام! 👋\n\n"
-        f"📄 فایل `.md` یا متن Markdown خود را بفرستید تا فوراً آن را با سایز Letter و تم دلخواه به PDF تبدیل کنم.\n\n"
-        f"⚙️ تم فعلی شما: **{theme.upper()}**\n"
-        f"• تغییر به تم تاریک: /dark\n"
-        f"• تغییر به تم روشن: /light\n"
-        f"• قرار دادن فهرست خودکار: نوشتن `[TOC]` در متن"
+        f"📄 فایل `.md` یا متن خود را بفرستید تا همراه با پیش‌نمایش، تبدیل به PDF شود.\n\n"
+        f"⚙️ تنظیمات فعلی شما:\n"
+        f"• تم: **{theme.upper()}** (/light | /dark)\n"
+        f"• جهت صفحه: **{orientation.upper()}** (/portrait | /landscape)\n"
+        f"• پشتیبانی از عکس‌های درون‌متنی و پیش‌نمایش تصویر صفحه اول 🖼️"
     )
 
 async def set_light(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -303,9 +336,18 @@ async def set_dark(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_themes[update.effective_chat.id] = "dark"
     await update.message.reply_text("🌙 تم خروجی به **تاریک (Dark)** تغییر یافت.")
 
+async def set_portrait(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_orientations[update.effective_chat.id] = "portrait"
+    await update.message.reply_text("📄 جهت صفحه به **عمودی (Portrait)** تغییر یافت.")
+
+async def set_landscape(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_orientations[update.effective_chat.id] = "landscape"
+    await update.message.reply_text("📑 جهت صفحه به **افقی (Landscape)** تغییر یافت.")
+
 async def process_conversion(update: Update, context: ContextTypes.DEFAULT_TYPE, md_text: str, file_title: str):
     chat_id = update.effective_chat.id
     theme = user_themes.get(chat_id, "light")
+    orientation = user_orientations.get(chat_id, "portrait")
     
     status_msg = await update.message.reply_text("⏳ در صف پردازش...")
     
@@ -313,18 +355,32 @@ async def process_conversion(update: Update, context: ContextTypes.DEFAULT_TYPE,
         await context.bot.edit_message_text(
             chat_id=chat_id,
             message_id=status_msg.message_id,
-            text=f"⚙️ در حال تولید PDF (تم {theme})..."
+            text="🖼️ در حال پردازش تصاویر و رندر پیش‌نمایش..."
         )
+        
         pdf_path = f"temp_{update.message.message_id}.pdf"
+        png_path = f"temp_{update.message.message_id}.png"
+        
         try:
-            await generate_pdf(md_text, pdf_path, theme=theme)
+            await generate_outputs(md_text, pdf_path, png_path, theme=theme, orientation=orientation)
+            
+            # ارسال پیش‌نمایش عکس صفحه اول
+            with open(png_path, 'rb') as img_file:
+                await update.message.reply_photo(
+                    photo=img_file,
+                    caption="👀 پیش‌نمایش صفحه اول سند:"
+                )
+            
             await context.bot.edit_message_text(
                 chat_id=chat_id,
                 message_id=status_msg.message_id,
-                text="✅ فایل با موفقیت آماده شد!"
+                text="✅ فایل PDF نهایی آماده شد!"
             )
-            with open(pdf_path, 'rb') as f:
-                await update.message.reply_document(document=f, filename=f"{file_title}.pdf")
+            
+            # ارسال فایل PDF
+            with open(pdf_path, 'rb') as pdf_file:
+                await update.message.reply_document(document=pdf_file, filename=f"{file_title}.pdf")
+                
         except Exception as e:
             await context.bot.edit_message_text(
                 chat_id=chat_id,
@@ -334,11 +390,13 @@ async def process_conversion(update: Update, context: ContextTypes.DEFAULT_TYPE,
         finally:
             if os.path.exists(pdf_path):
                 os.remove(pdf_path)
+            if os.path.exists(png_path):
+                os.remove(png_path)
 
 async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
     doc = update.message.document
     if not doc.file_name.lower().endswith('.md'):
-        await update.message.reply_text("⛔ لطفاً فقط فایل با پسوند `.md` ارسال کنید یا متن آن را مستقیماً بفرستید.")
+        await update.message.reply_text("⛔ لطفاً فقط فایل `.md` یا متن بفرستید.")
         return
         
     file = await context.bot.get_file(doc.file_id)
@@ -371,7 +429,11 @@ if __name__ == '__main__':
         app.add_handler(CommandHandler("start", start))
         app.add_handler(CommandHandler("light", set_light))
         app.add_handler(CommandHandler("dark", set_dark))
+        app.add_handler(CommandHandler("portrait", set_portrait))
+        app.add_handler(CommandHandler("landscape", set_landscape))
+        
         app.add_handler(MessageHandler(filters.Document.ALL, handle_document))
         app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
         
         app.run_polling()
+
