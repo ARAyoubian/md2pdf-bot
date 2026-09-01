@@ -67,23 +67,20 @@ HTML_TEMPLATE = """
             --table-even: #161b22;
         }
 
+        /* کنترل رنگ پس‌زمینه و حاشیه‌ها در سطح صفحه فیزیکی PDF */
         @page {
             size: letter {{PAGE_ORIENTATION}};
-            margin: 0; /* حاشیه فیزیکی صفحه صفر می‌شود تا رنگ پس‌زمینه کل صفحه را بگیرد */
-        }
-
-        html, body {
-            background-color: var(--bg-body) !important;
-            margin: 0;
-            padding: 0;
-            -webkit-print-color-adjust: exact;
+            margin: {{PAGE_MARGIN}};
+            background-color: var(--bg-body);
         }
 
         body {
+            background-color: var(--bg-body);
             font-family: 'Inter', 'Vazirmatn', -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
             color: var(--text-main);
             line-height: 1.7;
-            padding: {{PAGE_PADDING}}; /* حاشیه‌ها به عنوان پدینگ داخلی اعمال می‌شوند تا رنگ پس‌زمینه داشته باشند */
+            padding: 0;
+            margin: 0;
             font-size: 15px;
             letter-spacing: -0.01em;
         }
@@ -259,13 +256,14 @@ async def generate_pdf_output(md_text, output_pdf_path, theme="light", orientati
         classes.append("compact-mode")
     body_classes = " ".join(classes)
     
-    page_padding = "12mm 14mm" if compact else "20mm 22mm"
+    # تنظیم ابعاد و حاشیه‌ها در CSS به جای پلی‌رایت برای پوشش کامل رنگ پس‌زمینه
+    page_margin = "12mm 12mm" if compact else "20mm 20mm"
     page_orientation = "landscape" if orientation == "landscape" else "portrait"
     
     full_html = HTML_TEMPLATE.replace('/* PYGMENTS_INJECTION */', code_css)
     full_html = full_html.replace('{{BODY_CLASSES}}', body_classes)
     full_html = full_html.replace('{{content}}', html_content)
-    full_html = full_html.replace('{{PAGE_PADDING}}', page_padding)
+    full_html = full_html.replace('{{PAGE_MARGIN}}', page_margin)
     full_html = full_html.replace('{{PAGE_ORIENTATION}}', page_orientation)
     
     with tempfile.NamedTemporaryFile(delete=False, suffix='.html', mode='w', encoding='utf-8') as f:
@@ -286,11 +284,12 @@ async def generate_pdf_output(md_text, output_pdf_path, theme="light", orientati
         
         footer_color = "#6e7681" if theme == "dark" else "#8c959f"
         footer_html = f"""
-        <div style="font-family: 'Inter', -apple-system, sans-serif; font-size: 10px; width: 100%; text-align: center; color: {footer_color}; padding-bottom: 5px; background-color: transparent;">
+        <div style="font-family: 'Inter', -apple-system, sans-serif; font-size: 10px; width: 100%; text-align: center; color: {footer_color}; padding-bottom: 5px;">
             Page <span class="pageNumber"></span> of <span class="totalPages"></span>
         </div>
         """
         
+        # حاشیه‌های پلی‌رایت روی صفر تنظیم می‌شوند تا CSS کلاً کنترل صفحه و حاشیه‌ها را به دست بگیرد
         await page.pdf(
             path=output_pdf_path, 
             print_background=True,
