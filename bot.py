@@ -419,7 +419,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = (
         "سلام! 👋\n\n"
         "📄 فایل `.md`/`.txt`، متن دلخواه و یا فایل فشرده `.zip` خود را بفرستید.\n"
-        "💡 نکته: با ارسال فایل ZIP، ربات فایل‌ها را تک‌تک تبدیل کرده و پشت سر هم برایتان ارسال می‌کند.\n\n"
+        "💡 نکته: نام فایل خروجی PDF دقیقا مطابق با نام فایل اصلی شما (یا هشتگ سفارشی داخلی) تنظیم می‌شود.\n\n"
         "⚙️ تنظیمات خروجی خود را از طریق دکمه‌های زیر مدیریت کنید:"
     )
     
@@ -516,7 +516,7 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
                             base_name = file_name.rsplit('.', 1)[0]
                             title, clean_content = resolve_filename_and_content(content, default_name=base_name)
                             
-                            out_pdf = os.path.abspath(f"zip_out_{os.getpid()}.pdf")
+                            out_pdf = os.path.abspath(f"zip_out_{title}_{os.getpid()}.pdf")
                             
                             async with conversion_lock:
                                 await generate_pdf_output(clean_content, out_pdf, orientation=orient, compact=comp, columns=cols)
@@ -570,3 +570,4 @@ if __name__ == '__main__':
         app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
         
         app.run_polling()
+
