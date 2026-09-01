@@ -294,21 +294,18 @@ def process_callouts(md_text):
     md_text = md_text.replace('<div class="callout-important-marker"></div>', '<blockquote><strong>🔥 مهم:</strong>')
     return md_text
 
-def extract_title_and_hashtag(text, default_name="Document"):
+def clean_filename(text):
+    return re.sub(r'[\\/*?:"<>|#]', '', text).strip()[:40]
+
+def resolve_filename_and_content(text, default_name="Document"):
     hashtag_match = re.search(r'#([رعشگپتثجحخدذرزسشصطظعغفقکلمنوهیژآإأؤةءچپگژ۱۲۳۴۵۶۷۸۹۰a-zA-Z0-9_]+)', text)
     if hashtag_match:
         tag_name = hashtag_match.group(1).strip()
         if tag_name:
             clean_text = text.replace(f"#{tag_name}", "").strip()
-            return tag_name, clean_text
+            return clean_filename(tag_name), clean_text
 
-    match = re.search(r'^#\s+(.+)$', text, re.MULTILINE)
-    if match:
-        clean = re.sub(r'[\\/*?:"<>|#]', '', match.group(1)).strip()
-        if clean:
-            return clean[:40], text
-            
-    return default_name, text
+    return clean_filename(default_name), text
 
 async def init_browser():
     global global_browser, playwright_instance
@@ -422,7 +419,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = (
         "سلام! 👋\n\n"
         "📄 فایل `.md`/`.txt`، متن دلخواه و یا فایل فشرده `.zip` خود را بفرستید.\n"
-        "💡 نکته: در فایل‌های ZIP، نام فایل PDF خروجی دقیقا مطابق با نام فایل مارک‌داون متناظر (یا هشتگ داخلی آن) خواهد بود.\n\n"
+        "💡 نکته: با ارسال فایل ZIP، ربات فایل‌ها را تک‌تک تبدیل کرده و پشت سر هم برایتان ارسال می‌کند.\n\n"
         "⚙️ تنظیمات خروجی خود را از طریق دکمه‌های زیر مدیریت کنید:"
     )
     
@@ -456,39 +453,26 @@ async def process_conversion(update: Update, context: ContextTypes.DEFAULT_TYPE,
     columns = get_user_setting(chat_id, "columns", 1)
     
     default_name = file_default_name if file_default_name else f"Note_{update.message.message_id}"
-    file_title, md_text = extract_title_and_hashtag(md_text, default_name=default_name)
+    file_title, md_text = resolve_filename_and_content(md_text, default_name=default_name)
     
-    if len(md_text) > 5000:
-        status_msg = await update.message.reply_text("⚠️ حجم متن بالا است. پردازش چند ثانیه زمان می‌برد...")
-    else:
-        status_msg = await update.message.reply_text("⏳ در صف پردازش...")
+    status_msg = await update.message.reply_text(f"⏳ در حال تبدیل `{file_title}.pdf`...")
     
     async with conversion_lock:
-        await context.bot.edit_message_text(
-            chat_id=chat_id,
-            message_id=status_msg.message_id,
-            text=f"⚙️ در حال تولید فایل `{file_title}.pdf`..."
-        )
-        
-        pdf_path = f"temp_{update.message.message_id}.pdf"
+        pdf_path = f"temp_{update.message.message_id}_{os.getpid()}.pdf"
         
         try:
             await generate_pdf_output(md_text, pdf_path, orientation=orientation, compact=compact, columns=columns)
             
-            await context.bot.edit_message_text(
-                chat_id=chat_id,
-                message_id=status_msg.message_id,
-                text="✅ فایل PDF آماده شد!"
-            )
-            
             with open(pdf_path, 'rb') as pdf_file:
                 await update.message.reply_document(document=pdf_file, filename=f"{file_title}.pdf")
+            
+            await context.bot.delete_message(chat_id=chat_id, message_id=status_msg.message_id)
                 
         except Exception as e:
             await context.bot.edit_message_text(
                 chat_id=chat_id,
                 message_id=status_msg.message_id,
-                text=f"❌ خطایی رخ داد: {str(e)}"
+                text=f"❌ خطا در تبدیل `{file_title}`: {str(e)}"
             )
         finally:
             if os.path.exists(pdf_path):
@@ -511,7 +495,6 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
         extracted_dir = f"extracted_{doc.file_id}"
         os.makedirs(extracted_dir, exist_ok=True)
         
-        pdf_files = []
         try:
             with zipfile.ZipFile(temp_path, 'r') as zip_ref:
                 zip_ref.extractall(extracted_dir)
@@ -521,6 +504,7 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
             comp = get_user_setting(chat_id, "compact", False)
             cols = get_user_setting(chat_id, "columns", 1)
             
+            success_count = 0
             for root, dirs, files in os.walk(extracted_dir):
                 for file_name in files:
                     if file_name.lower().endswith(('.md', '.txt')):
@@ -529,39 +513,25 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
                             with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
                                 content = f.read()
                             
-                            # نام پیش‌فرض فایل برابر با نام فایل متناظر داخل زیپ (بدون پسوند)
                             base_name = file_name.rsplit('.', 1)[0]
-                            title, clean_content = extract_title_and_hashtag(content, default_name=base_name)
+                            title, clean_content = resolve_filename_and_content(content, default_name=base_name)
                             
-                            out_pdf = os.path.abspath(f"{title}_{os.getpid()}.pdf")
+                            out_pdf = os.path.abspath(f"zip_out_{os.getpid()}.pdf")
                             
                             async with conversion_lock:
                                 await generate_pdf_output(clean_content, out_pdf, orientation=orient, compact=comp, columns=cols)
                                 
                             if os.path.exists(out_pdf):
-                                pdf_files.append((out_pdf, f"{title}.pdf"))
+                                with open(out_pdf, 'rb') as pdf_file:
+                                    await update.message.reply_document(document=pdf_file, filename=f"{title}.pdf")
+                                os.remove(out_pdf)
+                                success_count += 1
                         except Exception:
                             continue
                         
-            if pdf_files:
-                zip_out_name = f"Batch_PDFs_{doc.file_id}.zip"
-                with zipfile.ZipFile(zip_out_name, 'w') as zip_out:
-                    for pdf_abs_path, pdf_display_name in pdf_files:
-                        if os.path.exists(pdf_abs_path):
-                            zip_out.write(pdf_abs_path, arcname=pdf_display_name)
-                            
-                with open(zip_out_name, 'rb') as z_file:
-                    await update.message.reply_document(document=z_file, filename="Converted_Files.zip")
-                
-                if os.path.exists(zip_out_name):
-                    os.remove(zip_out_name)
-                for pdf_abs_path, _ in pdf_files:
-                    if os.path.exists(pdf_abs_path):
-                        os.remove(pdf_abs_path)
-                        
-                await context.bot.delete_message(chat_id=update.effective_chat.id, message_id=status_msg.message_id)
-            else:
-                await context.bot.edit_message_text(chat_id=update.effective_chat.id, message_id=status_msg.message_id, text="❌ هیچ فایل `.md` یا `.txt` معتبری داخل فایل ZIP یافت نشد.")
+            await context.bot.delete_message(chat_id=update.effective_chat.id, message_id=status_msg.message_id)
+            if success_count == 0:
+                await update.message.reply_text("❌ هیچ فایل `.md` یا `.txt` معتبری داخل فایل ZIP یافت نشد.")
         except Exception as e:
             await context.bot.edit_message_text(chat_id=update.effective_chat.id, message_id=status_msg.message_id, text=f"❌ خطا در پردازش فایل ZIP: {str(e)}")
         finally:
@@ -600,4 +570,3 @@ if __name__ == '__main__':
         app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
         
         app.run_polling()
-
