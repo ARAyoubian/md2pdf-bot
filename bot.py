@@ -1,7 +1,5 @@
 import os
 import re
-import base64
-import aiohttp
 import tempfile
 import markdown
 import threading
@@ -28,6 +26,7 @@ global_browser = None
 playwright_instance = None
 user_themes = {}        # {chat_id: 'light' | 'dark'}
 user_orientations = {}  # {chat_id: 'portrait' | 'landscape'}
+user_compact_modes = {} # {chat_id: True | False}
 
 def run_dummy_server():
     port = int(os.environ.get("PORT", 8080))
@@ -79,6 +78,19 @@ HTML_TEMPLATE = """
             font-size: 15px;
             letter-spacing: -0.01em;
         }
+
+        /* حالت فشرده (Compact Mode) */
+        body.compact-mode {
+            padding: 5px 15px;
+            font-size: 13.5px;
+            line-height: 1.45;
+        }
+        body.compact-mode h1 { font-size: 22px; margin-top: 16px; margin-bottom: 8px; }
+        body.compact-mode h2 { font-size: 18px; margin-top: 14px; margin-bottom: 6px; }
+        body.compact-mode h3 { font-size: 15px; margin-top: 10px; margin-bottom: 4px; }
+        body.compact-mode p { margin-bottom: 8px; }
+        body.compact-mode table th, body.compact-mode table td { padding: 6px 10px; }
+        body.compact-mode pre, body.compact-mode .codehilite { padding: 10px 12px; margin: 10px 0; }
 
         h1, h2, h3, h4, h5, h6 {
             color: var(--text-main);
@@ -160,16 +172,6 @@ HTML_TEMPLATE = """
             border-radius: 0 6px 6px 0;
         }
 
-        img {
-            max-width: 100%;
-            border-radius: 8px;
-            box-shadow: 0 2px 8px rgba(0,0,0,0.08);
-            margin: 12px 0;
-            display: block;
-            margin-left: auto;
-            margin-right: auto;
-        }
-
         hr {
             height: 1px;
             background-color: var(--border-color);
@@ -201,7 +203,7 @@ HTML_TEMPLATE = """
     </script>
     <script id="MathJax-script" async src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-chtml.js"></script>
 </head>
-<body class="{{BODY_CLASS}}">
+<body class="{{BODY_CLASSES}}">
     {{content}}
 </body>
 </html>
@@ -215,26 +217,6 @@ def extract_title(md_text, default_name="Document"):
             return clean[:40]
     return default_name
 
-async def embed_images_as_base64(md_text):
-    """دانلود خودکار عکس‌های لینک‌شده و تبدیل آن‌ها به Base64 برای پایداری آفلاین"""
-    pattern = r'!\[([^\]]*)\]\(([^)]+)\)'
-    matches = re.findall(pattern, md_text)
-    
-    for alt, url in matches:
-        if url.startswith('http://') or url.startswith('https://'):
-            try:
-                async with aiohttp.ClientSession() as session:
-                    async with session.get(url, timeout=6) as resp:
-                        if resp.status == 200:
-                            content = await resp.read()
-                            encoded = base64.b64encode(content).decode('utf-8')
-                            mime = resp.headers.get('Content-Type', 'image/jpeg')
-                            data_uri = f"data:{mime};base64,{encoded}"
-                            md_text = md_text.replace(f"]({url})", f"]({data_uri})")
-            except Exception:
-                pass  # در صورت خطا در دانلود، لینک اصلی حفظ می‌شود
-    return md_text
-
 async def init_browser():
     global global_browser, playwright_instance
     if not global_browser:
@@ -245,11 +227,8 @@ async def init_browser():
         )
         print("✅ Global Browser Instance Initialized.")
 
-async def generate_outputs(md_text, output_pdf_path, output_png_path, theme="light", orientation="portrait"):
+async def generate_pdf_output(md_text, output_pdf_path, theme="light", orientation="portrait", compact=False):
     await init_browser()
-    
-    # تبدیل عکس‌های اینترنتی به Base64
-    md_text = await embed_images_as_base64(md_text)
     
     configs = {
         'codehilite': {
@@ -265,10 +244,16 @@ async def generate_outputs(md_text, output_pdf_path, output_png_path, theme="lig
     )
     
     code_css = CODE_STYLE_DARK if theme == "dark" else CODE_STYLE_LIGHT
-    body_class = "dark-theme" if theme == "dark" else ""
+    
+    classes = []
+    if theme == "dark":
+        classes.append("dark-theme")
+    if compact:
+        classes.append("compact-mode")
+    body_classes = " ".join(classes)
     
     full_html = HTML_TEMPLATE.replace('/* PYGMENTS_INJECTION */', code_css)
-    full_html = full_html.replace('{{BODY_CLASS}}', body_class)
+    full_html = full_html.replace('{{BODY_CLASSES}}', body_classes)
     full_html = full_html.replace('{{content}}', html_content)
     
     with tempfile.NamedTemporaryFile(delete=False, suffix='.html', mode='w', encoding='utf-8') as f:
@@ -287,10 +272,6 @@ async def generate_outputs(md_text, output_pdf_path, output_png_path, theme="lig
             }
         """)
         
-        # گرفتن اسکرین‌شات سریع (پیش‌نمایش صفحه اول)
-        await page.set_viewport_size({"width": 800, "height": 1100})
-        await page.screenshot(path=output_png_path, type="png", full_page=False)
-        
         is_landscape = (orientation == "landscape")
         footer_color = "#6e7681" if theme == "dark" else "#8c959f"
         footer_html = f"""
@@ -298,6 +279,8 @@ async def generate_outputs(md_text, output_pdf_path, output_png_path, theme="lig
             Page <span class="pageNumber"></span> of <span class="totalPages"></span>
         </div>
         """
+        
+        margin_config = {"top": "12mm", "bottom": "18mm", "left": "12mm", "right": "12mm"} if compact else {"top": "20mm", "bottom": "25mm", "left": "20mm", "right": "20mm"}
         
         await page.pdf(
             path=output_pdf_path, 
@@ -307,7 +290,7 @@ async def generate_outputs(md_text, output_pdf_path, output_png_path, theme="lig
             display_header_footer=True,
             header_template="<div></div>",
             footer_template=footer_html,
-            margin={"top": "20mm", "bottom": "25mm", "left": "20mm", "right": "20mm"}
+            margin=margin_config
         )
     finally:
         await page.close()
@@ -318,14 +301,17 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
     theme = user_themes.get(chat_id, "light")
     orientation = user_orientations.get(chat_id, "portrait")
+    compact = user_compact_modes.get(chat_id, False)
+    
+    status_compact = "فعال (Compact) 📦" if compact else "غیرفعال (Normal) 📖"
     
     await update.message.reply_text(
         f"سلام! 👋\n\n"
-        f"📄 فایل `.md` یا متن خود را بفرستید تا همراه با پیش‌نمایش، تبدیل به PDF شود.\n\n"
+        f"📄 فایل `.md` یا متن خود را بفرستید تا فوراً به PDF تبدیل شود.\n\n"
         f"⚙️ تنظیمات فعلی شما:\n"
         f"• تم: **{theme.upper()}** (/light | /dark)\n"
         f"• جهت صفحه: **{orientation.upper()}** (/portrait | /landscape)\n"
-        f"• پشتیبانی از عکس‌های درون‌متنی و پیش‌نمایش تصویر صفحه اول 🖼️"
+        f"• حالت فشرده: **{status_compact}** (/compact | /normal)"
     )
 
 async def set_light(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -344,10 +330,19 @@ async def set_landscape(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_orientations[update.effective_chat.id] = "landscape"
     await update.message.reply_text("📑 جهت صفحه به **افقی (Landscape)** تغییر یافت.")
 
+async def set_compact(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_compact_modes[update.effective_chat.id] = True
+    await update.message.reply_text("📦 **حالت فشرده (Compact Mode) فعال شد.**")
+
+async def set_normal(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_compact_modes[update.effective_chat.id] = False
+    await update.message.reply_text("📖 **حالت عادی (Normal Mode) فعال شد.**")
+
 async def process_conversion(update: Update, context: ContextTypes.DEFAULT_TYPE, md_text: str, file_title: str):
     chat_id = update.effective_chat.id
     theme = user_themes.get(chat_id, "light")
     orientation = user_orientations.get(chat_id, "portrait")
+    compact = user_compact_modes.get(chat_id, False)
     
     status_msg = await update.message.reply_text("⏳ در صف پردازش...")
     
@@ -355,29 +350,20 @@ async def process_conversion(update: Update, context: ContextTypes.DEFAULT_TYPE,
         await context.bot.edit_message_text(
             chat_id=chat_id,
             message_id=status_msg.message_id,
-            text="🖼️ در حال پردازش تصاویر و رندر پیش‌نمایش..."
+            text="⚙️ در حال تولید فایل PDF..."
         )
         
         pdf_path = f"temp_{update.message.message_id}.pdf"
-        png_path = f"temp_{update.message.message_id}.png"
         
         try:
-            await generate_outputs(md_text, pdf_path, png_path, theme=theme, orientation=orientation)
-            
-            # ارسال پیش‌نمایش عکس صفحه اول
-            with open(png_path, 'rb') as img_file:
-                await update.message.reply_photo(
-                    photo=img_file,
-                    caption="👀 پیش‌نمایش صفحه اول سند:"
-                )
+            await generate_pdf_output(md_text, pdf_path, theme=theme, orientation=orientation, compact=compact)
             
             await context.bot.edit_message_text(
                 chat_id=chat_id,
                 message_id=status_msg.message_id,
-                text="✅ فایل PDF نهایی آماده شد!"
+                text="✅ فایل PDF آماده شد!"
             )
             
-            # ارسال فایل PDF
             with open(pdf_path, 'rb') as pdf_file:
                 await update.message.reply_document(document=pdf_file, filename=f"{file_title}.pdf")
                 
@@ -390,8 +376,6 @@ async def process_conversion(update: Update, context: ContextTypes.DEFAULT_TYPE,
         finally:
             if os.path.exists(pdf_path):
                 os.remove(pdf_path)
-            if os.path.exists(png_path):
-                os.remove(png_path)
 
 async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
     doc = update.message.document
@@ -431,6 +415,8 @@ if __name__ == '__main__':
         app.add_handler(CommandHandler("dark", set_dark))
         app.add_handler(CommandHandler("portrait", set_portrait))
         app.add_handler(CommandHandler("landscape", set_landscape))
+        app.add_handler(CommandHandler("compact", set_compact))
+        app.add_handler(CommandHandler("normal", set_normal))
         
         app.add_handler(MessageHandler(filters.Document.ALL, handle_document))
         app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
