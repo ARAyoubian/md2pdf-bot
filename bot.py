@@ -6,8 +6,12 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 from telegram import Update
 from telegram.ext import Application, MessageHandler, filters, ContextTypes, CommandHandler
 from playwright.async_api import async_playwright
+from pygments.formatters import HtmlFormatter
 
-# سرور وب در پس‌زمینه برای زنده نگه داشتن محیط رایگان
+# دریافت استایل رنگی کدها از کتابخانه Pygments
+CODE_STYLE = HtmlFormatter(style="friendly").get_style_defs('.codehilite')
+
+# سرور وب در پس‌زمینه برای زنده نگه داشتن محیط Back4App
 def run_dummy_server():
     port = int(os.environ.get("PORT", 8080))
     class RequestHandler(BaseHTTPRequestHandler):
@@ -17,38 +21,144 @@ def run_dummy_server():
             self.end_headers()
             self.wfile.write(b"Bot is Running successfully on Back4App!")
     server = HTTPServer(('0.0.0.0', port), RequestHandler)
-    print(f"Web server is running on port {port}...")
     server.serve_forever()
 
-HTML_TEMPLATE = """
+HTML_TEMPLATE = f"""
 <!DOCTYPE html>
 <html dir="auto">
 <head>
     <meta charset="utf-8">
+    <!-- بارگذاری فونت‌های استاندارد Inter، Vazirmatn و JetBrains Mono -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&family=Vazirmatn:wght@400;500;600;700&display=swap" rel="stylesheet">
+    
     <style>
-        body { 
-            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Vazirmatn", "Helvetica Neue", Arial, sans-serif; 
-            line-height: 1.6; 
-            padding: 40px; 
-            font-size: 16px; 
-        }
-        pre { background: #f4f4f4; padding: 15px; border-radius: 8px; overflow-x: auto; direction: ltr; }
-        code { background: #f4f4f4; padding: 2px 5px; border-radius: 4px; font-family: monospace; }
-        table { border-collapse: collapse; width: 100%; margin-bottom: 20px; }
-        th, td { border: 1px solid #ddd; padding: 10px; text-align: left; }
-        th { background-color: #f8f9fa; }
-        img { max-width: 100%; height: auto; border-radius: 8px; }
-        blockquote { border-left: 4px solid #ddd; margin: 0; padding-left: 15px; color: #555; }
+        :root {{
+            --text-main: #1f2328;
+            --text-muted: #656d76;
+            --bg-code: #f6f8fa;
+            --border-color: #d0d7de;
+            --accent-color: #0969da;
+        }}
+
+        body {{
+            font-family: 'Inter', 'Vazirmatn', -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+            color: var(--text-main);
+            line-height: 1.7;
+            padding: 35px;
+            font-size: 15px;
+            letter-spacing: -0.01em;
+        }}
+
+        h1, h2, h3, h4, h5, h6 {{
+            color: var(--text-main);
+            font-weight: 600;
+            line-height: 1.3;
+            margin-top: 24px;
+            margin-bottom: 12px;
+        }}
+
+        h1 {{ font-size: 26px; border-bottom: 2px solid var(--border-color); padding-bottom: 8px; }}
+        h2 {{ font-size: 20px; border-bottom: 1px solid var(--border-color); padding-bottom: 6px; }}
+        h3 {{ font-size: 17px; }}
+
+        p {{ margin-bottom: 14px; }}
+
+        /* هایلایت کدهای برنامه‌نویسی */
+        pre, .codehilite {{
+            background-color: var(--bg-code) !important;
+            border: 1px solid var(--border-color);
+            border-radius: 8px;
+            padding: 14px 16px;
+            overflow-x: auto;
+            direction: ltr !important;
+            text-align: left !important;
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 13.5px;
+            line-height: 1.5;
+            margin: 16px 0;
+        }}
+
+        code {{
+            font-family: 'JetBrains Mono', monospace;
+            background-color: rgba(175, 184, 193, 0.2);
+            padding: 2px 6px;
+            border-radius: 5px;
+            font-size: 85%;
+            direction: ltr;
+            display: inline-block;
+        }}
+
+        pre code {{
+            background-color: transparent !important;
+            padding: 0;
+            display: block;
+        }}
+
+        /* جداول مدرن */
+        table {{
+            border-collapse: collapse;
+            width: 100%;
+            margin: 20px 0;
+            font-size: 14px;
+            border-radius: 6px;
+            overflow: hidden;
+            box-shadow: 0 0 0 1px var(--border-color);
+        }}
+
+        th, td {{
+            padding: 10px 14px;
+            border: 1px solid var(--border-color);
+        }}
+
+        th {{
+            background-color: var(--bg-code);
+            font-weight: 600;
+            text-align: inherit;
+        }}
+
+        tr:nth-child(even) {{
+            background-color: #fafbfc;
+        }}
+
+        /* نقل‌قول‌ها */
+        blockquote {{
+            margin: 16px 0;
+            padding: 4px 18px;
+            color: var(--text-muted);
+            border-inline-start: 4px solid var(--accent-color);
+            background: #f8fafc;
+            border-radius: 0 6px 6px 0;
+        }}
+
+        /* تصاویر */
+        img {{
+            max-width: 100%;
+            border-radius: 8px;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.08);
+            margin: 12px 0;
+        }}
+
+        hr {{
+            height: 1px;
+            background-color: var(--border-color);
+            border: none;
+            margin: 24px 0;
+        }}
+
+        {CODE_STYLE}
     </style>
-    <!-- تنظیمات و اسکریپت MathJax -->
+    
+    <!-- تنظیمات MathJax برای رندر ریاضیات -->
     <script>
-        window.MathJax = {
-            tex: {
+        window.MathJax = {{
+            tex: {{
                 inlineMath: [['$', '$'], ['\\\\(', '\\\\)']],
                 displayMath: [['$$', '$$'], ['\\\\[', '\\\\]']]
-            },
-            svg: { fontCache: 'global' }
-        };
+            }},
+            svg: {{ fontCache: 'global' }}
+        }};
     </script>
     <script id="MathJax-script" async src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-chtml.js"></script>
 </head>
@@ -59,7 +169,17 @@ HTML_TEMPLATE = """
 """
 
 async def generate_pdf(md_text, output_pdf_path):
-    html_content = markdown.markdown(md_text, extensions=['fenced_code', 'tables', 'nl2br', 'mdx_math'])
+    # فعال‌سازی اکستنشن‌های markdown برای کد و جداول
+    html_content = markdown.markdown(
+        md_text, 
+        extensions=['fenced_code', 'codehilite', 'tables', 'nl2br', 'mdx_math'],
+        extension_configs={{
+            'codehilite': {{
+                'guess_lang': False,
+                'css_class': 'codehilite'
+            }}
+        }}
+    )
     full_html = HTML_TEMPLATE.replace('{{content}}', html_content)
     
     with tempfile.NamedTemporaryFile(delete=False, suffix='.html', mode='w', encoding='utf-8') as f:
@@ -72,18 +192,20 @@ async def generate_pdf(md_text, output_pdf_path):
             args=['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage', '--disable-gpu']
         )
         page = await browser.new_page()
+        
+        # بارگذاری صفحه و فونت‌های وب
         await page.goto(f"file://{temp_html_path}", wait_until="networkidle")
         
-        # منتظر ماندن هوشمند و دقیق برای رندر شدن کامل فرمول‌های ریاضی MathJax
+        # منتظر ماندن برای دانلود کامل فونت‌ها و رندر MathJax
         await page.evaluate("""
             async () => {
+                await document.fonts.ready;
                 if (window.MathJax && window.MathJax.typesetPromise) {
                     await window.MathJax.typesetPromise();
                 }
             }
         """)
         
-        # تولید خروجی PDF
         await page.pdf(
             path=output_pdf_path, 
             format="A4", 
@@ -95,15 +217,15 @@ async def generate_pdf(md_text, output_pdf_path):
     os.remove(temp_html_path)
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("سلام! یک فایل Markdown (.md) بفرست تا اون رو به PDF تبدیل کنم.")
+    await update.message.reply_text("سلام! فایل Markdown (.md) خود را بفرستید تا با قالب جدید و زیباسازی‌شده به PDF تبدیل کنم.")
 
 async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
     document = update.message.document
     if not document.file_name.lower().endswith('.md'):
-        await update.message.reply_text("⛔ لطفاً فقط فایل `.md` بفرست.")
+        await update.message.reply_text("⛔ لطفاً فقط فایل `.md` بفرستید.")
         return
         
-    status_msg = await update.message.reply_text("📥 در حال پردازش فایل...")
+    status_msg = await update.message.reply_text("📥 در حال پردازش و استایل‌دهی به سند...")
     try:
         file = await context.bot.get_file(document.file_id)
         md_path = f"{document.file_id}.md"
@@ -114,7 +236,7 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
             md_text = f.read()
             
         await generate_pdf(md_text, pdf_path)
-        await context.bot.edit_message_text(chat_id=update.message.chat_id, message_id=status_msg.message_id, text="✅ فایل آماده شد!")
+        await context.bot.edit_message_text(chat_id=update.message.chat_id, message_id=status_msg.message_id, text="✅ فایل با موفقیت آماده شد!")
         
         with open(pdf_path, 'rb') as f:
             await update.message.reply_document(document=f, filename=document.file_name.replace('.md', '.pdf'))
@@ -129,14 +251,12 @@ if __name__ == '__main__':
     TOKEN = os.getenv("BOT_TOKEN")
     
     if not TOKEN:
-        print("❌ Error: BOT_TOKEN is missing! Please set it in Environment Variables.")
+        print("❌ Error: BOT_TOKEN is missing!")
     else:
-        # ۱. سرور وب در پس‌زمینه
         threading.Thread(target=run_dummy_server, daemon=True).start()
-        
-        # ۲. اجرای ربات تلگرام در هسته اصلی
         print("✅ Starting Telegram Bot...")
         app = Application.builder().token(TOKEN).build()
         app.add_handler(CommandHandler("start", start))
         app.add_handler(MessageHandler(filters.Document.ALL, handle_document))
         app.run_polling()
+
