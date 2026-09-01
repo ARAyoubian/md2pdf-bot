@@ -18,12 +18,10 @@ from playwright.async_api import async_playwright
 from pygments.formatters import HtmlFormatter
 
 CODE_STYLE_LIGHT = HtmlFormatter(style="friendly").get_style_defs('.codehilite')
-CODE_STYLE_DARK = HtmlFormatter(style="monokai").get_style_defs('.codehilite')
 
 conversion_lock = asyncio.Lock()
 global_browser = None
 playwright_instance = None
-user_themes = {}        
 user_orientations = {}  
 user_compact_modes = {} 
 
@@ -58,16 +56,6 @@ HTML_TEMPLATE = """
             --table-even: #fafbfc;
         }
 
-        body.dark-theme {
-            --bg-body: #0d1117;
-            --text-main: #e6edf3;
-            --text-muted: #8b949e;
-            --bg-code: #161b22;
-            --border-color: #30363d;
-            --accent-color: #58a6ff;
-            --table-even: #161b22;
-        }
-
         @page {
             size: letter {{PAGE_ORIENTATION}};
             margin: {{PAGE_MARGIN}};
@@ -83,6 +71,17 @@ HTML_TEMPLATE = """
             margin: 0;
             font-size: 15px;
             letter-spacing: -0.01em;
+        }
+
+        /* Smart Page Break: انتقال هر عنوان اصلی (h1) به صفحه جدید */
+        h1 {
+            page-break-before: always;
+            break-before: page;
+        }
+        /* جلوگیری از شکست صفحه در اولین هدر سند برای خالی نماندن صفحه اول */
+        body > h1:first-of-type {
+            page-break-before: avoid;
+            break-before: avoid;
         }
 
         /* بهینه‌سازی حالت افقی (Landscape) */
@@ -237,7 +236,7 @@ async def init_browser():
         )
         print("✅ Global Browser Instance Initialized.")
 
-async def generate_pdf_output(md_text, output_pdf_path, theme="light", orientation="portrait", compact=False):
+async def generate_pdf_output(md_text, output_pdf_path, orientation="portrait", compact=False):
     await init_browser()
     
     configs = {
@@ -253,11 +252,7 @@ async def generate_pdf_output(md_text, output_pdf_path, theme="light", orientati
         extension_configs=configs
     )
     
-    code_css = CODE_STYLE_DARK if theme == "dark" else CODE_STYLE_LIGHT
-    
     classes = []
-    if theme == "dark":
-        classes.append("dark-theme")
     if compact:
         classes.append("compact-mode")
     if orientation == "landscape":
@@ -267,7 +262,7 @@ async def generate_pdf_output(md_text, output_pdf_path, theme="light", orientati
     page_margin = "12mm 12mm" if compact else "20mm 20mm"
     page_orientation = "landscape" if orientation == "landscape" else "portrait"
     
-    full_html = HTML_TEMPLATE.replace('/* PYGMENTS_INJECTION */', code_css)
+    full_html = HTML_TEMPLATE.replace('/* PYGMENTS_INJECTION */', CODE_STYLE_LIGHT)
     full_html = full_html.replace('{{BODY_CLASSES}}', body_classes)
     full_html = full_html.replace('{{content}}', html_content)
     full_html = full_html.replace('{{PAGE_MARGIN}}', page_margin)
@@ -289,9 +284,8 @@ async def generate_pdf_output(md_text, output_pdf_path, theme="light", orientati
             }
         """)
         
-        footer_color = "#6e7681" if theme == "dark" else "#8c959f"
-        footer_html = f"""
-        <div style="font-family: 'Inter', -apple-system, sans-serif; font-size: 10px; width: 100%; text-align: center; color: {footer_color}; padding-bottom: 5px;">
+        footer_html = """
+        <div style="font-family: 'Inter', -apple-system, sans-serif; font-size: 10px; width: 100%; text-align: center; color: #8c959f; padding-bottom: 5px;">
             Page <span class="pageNumber"></span> of <span class="totalPages"></span>
         </div>
         """
@@ -310,18 +304,15 @@ async def generate_pdf_output(md_text, output_pdf_path, theme="light", orientati
             os.remove(temp_html_path)
 
 def get_settings_keyboard(chat_id):
-    theme = user_themes.get(chat_id, "light")
     orientation = user_orientations.get(chat_id, "portrait")
     compact = user_compact_modes.get(chat_id, False)
     
-    theme_btn = "🌙 تم: تاریک" if theme == "dark" else "☀️ تم: روشن"
     orient_btn = "📑 جهت: افقی" if orientation == "landscape" else "📄 جهت: عمودی"
     compact_btn = "📦 حالت: فشرده" if compact else "📖 حالت: عادی"
     
     keyboard = [
-        [InlineKeyboardButton(theme_btn, callback_data="toggle_theme"),
-         InlineKeyboardButton(orient_btn, callback_data="toggle_orient")],
-        [InlineKeyboardButton(compact_btn, callback_data="toggle_compact")]
+        [InlineKeyboardButton(orient_btn, callback_data="toggle_orient"),
+         InlineKeyboardButton(compact_btn, callback_data="toggle_compact")]
     ]
     return InlineKeyboardMarkup(keyboard)
 
@@ -331,7 +322,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     text = (
         "سلام! 👋\n\n"
-        "📄 فایل `.md` یا `.txt` خود و یا متن دلخواهتان را بفرستید تا فوراً به PDF تبدیل شود.\n\n"
+        "📄 فایل `.md` یا `.txt` خود و یا متن دلخواهتان را بفرستید تا فوراً به PDF تبدیل شود.\n"
+        "✨ ویژگی جدید: شکست خودکار صفحات در عنوان‌های اصلی (Smart Page Break).\n\n"
         "⚙️ تنظیمات خروجی خود را از طریق دکمه‌های زیر تغییر دهید:"
     )
     
@@ -346,10 +338,7 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
     
     data = query.data
-    if data == "toggle_theme":
-        current = user_themes.get(chat_id, "light")
-        user_themes[chat_id] = "dark" if current == "light" else "light"
-    elif data == "toggle_orient":
+    if data == "toggle_orient":
         current = user_orientations.get(chat_id, "portrait")
         user_orientations[chat_id] = "landscape" if current == "portrait" else "portrait"
     elif data == "toggle_compact":
@@ -360,7 +349,6 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def process_conversion(update: Update, context: ContextTypes.DEFAULT_TYPE, md_text: str, file_title: str):
     chat_id = update.effective_chat.id
-    theme = user_themes.get(chat_id, "light")
     orientation = user_orientations.get(chat_id, "portrait")
     compact = user_compact_modes.get(chat_id, False)
     
@@ -370,13 +358,13 @@ async def process_conversion(update: Update, context: ContextTypes.DEFAULT_TYPE,
         await context.bot.edit_message_text(
             chat_id=chat_id,
             message_id=status_msg.message_id,
-            text="⚙️ در حال تولید فایل PDF..."
+            text="⚙️ در حال تولید فایل PDF با صفحه‌بندی هوشمند..."
         )
         
         pdf_path = f"temp_{update.message.message_id}.pdf"
         
         try:
-            await generate_pdf_output(md_text, pdf_path, theme=theme, orientation=orientation, compact=compact)
+            await generate_pdf_output(md_text, pdf_path, orientation=orientation, compact=compact)
             
             await context.bot.edit_message_text(
                 chat_id=chat_id,
