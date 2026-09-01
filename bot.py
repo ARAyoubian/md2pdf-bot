@@ -6,6 +6,7 @@ import tempfile
 import markdown
 import threading
 import asyncio
+import gc
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
@@ -110,7 +111,6 @@ HTML_TEMPLATE = """
             letter-spacing: -0.01em;
         }
 
-        /* حالت دو ستونی (Multi-Column Layout) */
         body.columns-2 {
             column-count: 2;
             column-gap: 25px;
@@ -215,7 +215,6 @@ HTML_TEMPLATE = """
             background-color: var(--table-even);
         }
 
-        /* کادرهای رنگی پیشرفته (Callout Boxes) */
         blockquote {
             margin: 16px 0;
             padding: 12px 18px;
@@ -284,13 +283,11 @@ HTML_TEMPLATE = """
 """
 
 def process_callouts(md_text):
-    # پردازش بلوک‌های یادداشت و اخطار مانند [!NOTE]
     md_text = re.sub(r'>\s*\[!NOTE\]', '<div class="callout-note-marker"></div>', md_text)
     md_text = re.sub(r'>\s*\[!WARNING\]', '<div class="callout-warning-marker"></div>', md_text)
     md_text = re.sub(r'>\s*\[!TIP\]', '<div class="callout-tip-marker"></div>', md_text)
     md_text = re.sub(r'>\s*\[!IMPORTANT\]', '<div class="callout-important-marker"></div>', md_text)
     
-    # تبدیل به کلاس‌های استایل بلاک‌کوت
     md_text = md_text.replace('<div class="callout-note-marker"></div>', '<blockquote><strong>📌 نکته:</strong>')
     md_text = md_text.replace('<div class="callout-warning-marker"></div>', '<blockquote><strong>⚠️ هشدار:</strong>')
     md_text = md_text.replace('<div class="callout-tip-marker"></div>', '<blockquote><strong>💡 پیشنهاد:</strong>')
@@ -319,9 +316,16 @@ async def init_browser():
         playwright_instance = await async_playwright().start()
         global_browser = await playwright_instance.chromium.launch(
             headless=True,
-            args=['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage', '--disable-gpu']
+            args=[
+                '--no-sandbox', 
+                '--disable-setuid-sandbox', 
+                '--disable-dev-shm-usage', 
+                '--disable-gpu',
+                '--disable-extensions',
+                '--js-flags="--max-old-space-size=128"'
+            ]
         )
-        print("✅ Global Browser Instance Initialized.")
+        print("✅ Global Browser Instance Initialized with RAM limits.")
 
 async def generate_pdf_output(md_text, output_pdf_path, orientation="portrait", compact=False, columns=1):
     await init_browser()
@@ -393,6 +397,8 @@ async def generate_pdf_output(md_text, output_pdf_path, orientation="portrait", 
         await page.close()
         if os.path.exists(temp_html_path):
             os.remove(temp_html_path)
+        # آزاد سازی رم پایتون برای پایداری در سرور ۲۵۶ مگابایتی
+        gc.collect()
 
 def get_settings_keyboard(chat_id):
     orientation = get_user_setting(chat_id, "orientation", "portrait")
@@ -416,8 +422,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     text = (
         "سلام! 👋\n\n"
-        "📄 فایل `.md`/`.txt`، متن دلخواه و یا حتی فایل فشرده `.zip` حاوی چندین جزوه را بفرستید.\n"
-        "✨ قابلیت‌های جدید: کادرهای رنگی هشدار (`> [!NOTE]`) و قالب‌بندی دو ستونی!\n\n"
+        "📄 فایل `.md`/`.txt`، متن دلخواه و یا فایل فشرده `.zip` خود را بفرستید.\n\n"
         "⚙️ تنظیمات خروجی خود را از طریق دکمه‌های زیر مدیریت کنید:"
     )
     
@@ -503,43 +508,57 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await file.download_to_drive(temp_path)
     
     if filename.endswith('.zip'):
-        status_msg = await update.message.reply_text("📦 استخراج و پردازش دسته‌جمعی فایل‌های ZIP...")
+        status_msg = await update.message.reply_text("📦 استخراج و پردازش جریانی فایل‌های ZIP...")
         extracted_dir = f"extracted_{doc.file_id}"
         os.makedirs(extracted_dir, exist_ok=True)
         
+        pdf_files = []
         try:
             with zipfile.ZipFile(temp_path, 'r') as zip_ref:
                 zip_ref.extractall(extracted_dir)
                 
-            pdf_files = []
+            chat_id = update.effective_chat.id
+            orient = get_user_setting(chat_id, "orientation", "portrait")
+            comp = get_user_setting(chat_id, "compact", False)
+            cols = get_user_setting(chat_id, "columns", 1)
+            
             for root, dirs, files in os.walk(extracted_dir):
                 for file_name in files:
                     if file_name.lower().endswith(('.md', '.txt')):
                         file_path = os.path.join(root, file_name)
-                        with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
-                            content = f.read()
-                        title, clean_content = extract_title_and_hashtag(content, default_name=file_name.rsplit('.', 1)[0])
-                        out_pdf = f"{title}.pdf"
-                        
-                        chat_id = update.effective_chat.id
-                        orient = get_user_setting(chat_id, "orientation", "portrait")
-                        comp = get_user_setting(chat_id, "compact", False)
-                        cols = get_user_setting(chat_id, "columns", 1)
-                        
-                        async with conversion_lock:
-                            await generate_pdf_output(clean_content, out_pdf, orientation=orient, compact=comp, columns=cols)
-                        pdf_files.append(out_pdf)
+                        try:
+                            with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
+                                content = f.read()
+                            title, clean_content = extract_title_and_hashtag(content, default_name=file_name.rsplit('.', 1)[0])
+                            
+                            # ساخت فایل PDF موقت با مسیر مطلق امن
+                            out_pdf = os.path.abspath(f"{title}_{os.getpid()}.pdf")
+                            
+                            async with conversion_lock:
+                                await generate_pdf_output(clean_content, out_pdf, orientation=orient, compact=comp, columns=cols)
+                                
+                            if os.path.exists(out_pdf):
+                                pdf_files.append((out_pdf, f"{title}.pdf"))
+                        except Exception:
+                            continue
                         
             if pdf_files:
                 zip_out_name = f"Batch_PDFs_{doc.file_id}.zip"
                 with zipfile.ZipFile(zip_out_name, 'w') as zip_out:
-                    for pdf in pdf_files:
-                        zip_out.write(pdf)
-                        os.remove(pdf)
-                        
+                    for pdf_abs_path, pdf_display_name in pdf_files:
+                        if os.path.exists(pdf_abs_path):
+                            zip_out.write(pdf_abs_path, arcname=pdf_display_name)
+                            
                 with open(zip_out_name, 'rb') as z_file:
                     await update.message.reply_document(document=z_file, filename="Converted_Files.zip")
-                os.remove(zip_out_name)
+                
+                # پاک‌سازی فایل‌های موقت ZIP و PDFها
+                if os.path.exists(zip_out_name):
+                    os.remove(zip_out_name)
+                for pdf_abs_path, _ in pdf_files:
+                    if os.path.exists(pdf_abs_path):
+                        os.remove(pdf_abs_path)
+                        
                 await context.bot.delete_message(chat_id=update.effective_chat.id, message_id=status_msg.message_id)
             else:
                 await context.bot.edit_message_text(chat_id=update.effective_chat.id, message_id=status_msg.message_id, text="❌ هیچ فایل `.md` یا `.txt` معتبری داخل فایل ZIP یافت نشد.")
@@ -549,6 +568,7 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
             if os.path.exists(extracted_dir):
                 import shutil
                 shutil.rmtree(extracted_dir)
+            gc.collect()
     else:
         with open(temp_path, 'r', encoding='utf-8', errors='ignore') as f:
             md_text = f.read()
