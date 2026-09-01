@@ -297,18 +297,6 @@ def process_callouts(md_text):
 def clean_filename(text):
     return re.sub(r'[\\/*?:"<>|#]', '', text).strip()[:40]
 
-def resolve_filename_and_content(text, default_name="Document"):
-    # قانون اول: نام فایل اصلی است. هشتگ فقط در صورت تمایل دستی نام را عوض می‌کند.
-    title = clean_filename(default_name)
-    hashtag_match = re.search(r'#([رعشگپتثجحخدذرزسشصطظعغفقکلمنوهیژآإأؤةءچپگژ۱۲۳۴۵۶۷۸۹۰a-zA-Z0-9_]+)', text)
-    if hashtag_match:
-        tag_name = hashtag_match.group(1).strip()
-        if tag_name:
-            title = clean_filename(tag_name)
-            text = text.replace(f"#{tag_name}", "").strip()
-
-    return title, text
-
 async def init_browser():
     global global_browser, playwright_instance
     if not global_browser:
@@ -454,8 +442,7 @@ async def process_conversion(update: Update, context: ContextTypes.DEFAULT_TYPE,
     compact = get_user_setting(chat_id, "compact", False)
     columns = get_user_setting(chat_id, "columns", 1)
     
-    default_name = file_default_name if file_default_name else f"Note_{update.message.message_id}"
-    file_title, md_text = resolve_filename_and_content(md_text, default_name=default_name)
+    file_title = clean_filename(file_default_name if file_default_name else f"Note_{update.message.message_id}")
     
     status_msg = await update.message.reply_text(f"⏳ در حال تبدیل `{file_title}.pdf`...")
     
@@ -515,13 +502,12 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
                             with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
                                 content = f.read()
                             
-                            base_name = file_name.rsplit('.', 1)[0]
-                            title, clean_content = resolve_filename_and_content(content, default_name=base_name)
-                            
+                            # نام فایل اصلی داخل زیپ به عنوان نام خروجی PDF تعیین می‌شود
+                            title = clean_filename(file_name.rsplit('.', 1)[0])
                             out_pdf = os.path.abspath(f"zip_out_{title}_{os.getpid()}.pdf")
                             
                             async with conversion_lock:
-                                await generate_pdf_output(clean_content, out_pdf, orientation=orient, compact=comp, columns=cols)
+                                await generate_pdf_output(content, out_pdf, orientation=orient, compact=comp, columns=cols)
                                 
                             if os.path.exists(out_pdf):
                                 with open(out_pdf, 'rb') as pdf_file:
@@ -557,7 +543,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await process_conversion(update, context, text)
 
 if __name__ == '__main__':
-    TOKEN = os.getenv("BOT_TOKEN")
+    TOKEN = os.environ.get("BOT_TOKEN")
     if not TOKEN:
         print("❌ Error: BOT_TOKEN is missing!")
     else:
