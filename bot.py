@@ -73,18 +73,15 @@ HTML_TEMPLATE = """
             letter-spacing: -0.01em;
         }
 
-        /* Smart Page Break: انتقال هر عنوان اصلی (h1) به صفحه جدید */
         h1 {
             page-break-before: always;
             break-before: page;
         }
-        /* جلوگیری از شکست صفحه در اولین هدر سند برای خالی نماندن صفحه اول */
         body > h1:first-of-type {
             page-break-before: avoid;
             break-before: avoid;
         }
 
-        /* بهینه‌سازی حالت افقی (Landscape) */
         body.landscape-mode {
             max-width: 900px;
             margin: 0 auto;
@@ -198,16 +195,35 @@ HTML_TEMPLATE = """
         .toc ul { padding-inline-start: 20px; margin: 5px 0; }
         .toc a { color: var(--accent-color); text-decoration: none; }
 
+        /* استایل‌های پیشرفته برای رندر روان فرمول‌ها در جداول و لیست‌ها */
+        mjx-container {
+            overflow-x: auto;
+            overflow-y: hidden;
+            max-width: 100%;
+        }
+        td mjx-container, th mjx-container {
+            display: inline-block !important;
+            margin: 0 !important;
+        }
+
         /* PYGMENTS_INJECTION */
     </style>
     
+    <!-- تنظیمات پیشرفته و بهینه‌شده MathJax برای جداول، لیست‌ها و بلوک‌های چندخطی -->
     <script>
         window.MathJax = {
             tex: {
                 inlineMath: [['$', '$'], ['\\\\(', '\\\\)']],
-                displayMath: [['$$', '$$'], ['\\\\[', '\\\\]']]
+                displayMath: [['$$', '$$'], ['\\\\[', '\\\\]']],
+                processEscapes: true,
+                processEnvironments: true
             },
-            svg: { fontCache: 'global' }
+            options: {
+                skipHtmlTags: ['script', 'noscript', 'style', 'textarea', 'pre', 'code']
+            },
+            chtml: {
+                scale: 0.95
+            }
         };
     </script>
     <script id="MathJax-script" async src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-chtml.js"></script>
@@ -218,13 +234,24 @@ HTML_TEMPLATE = """
 </html>
 """
 
-def extract_title(md_text, default_name="Document"):
-    match = re.search(r'^#\s+(.+)$', md_text, re.MULTILINE)
+def extract_title_and_hashtag(text, default_name="Document"):
+    # استخراج هشتگ به عنوان نام فایل خروجی (مثلاً #فصل_اول)
+    hashtag_match = re.search(r'#([رعشگپتثجحخدذرزسشصطظعغفقکلمنوهیژآإأؤةءچپگژ۱۲۳۴۵۶۷۸۹۰a-zA-Z0-9_]+)', text)
+    if hashtag_match:
+        tag_name = hashtag_match.group(1).strip()
+        if tag_name:
+            # حذف هشتگ از متن اصلی تا داخل PDF چاپ نشود
+            clean_text = text.replace(f"#{tag_name}", "").strip()
+            return tag_name, clean_text
+
+    # استخراج اولین هدینگ سند
+    match = re.search(r'^#\s+(.+)$', text, re.MULTILINE)
     if match:
-        clean = re.sub(r'[\\/*?:"<>|]', '', match.group(1)).strip()
+        clean = re.sub(r'[\\/*?:"<>|#]', '', match.group(1)).strip()
         if clean:
-            return clean[:40]
-    return default_name
+            return clean[:40], text
+            
+    return default_name, text
 
 async def init_browser():
     global global_browser, playwright_instance
@@ -322,8 +349,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     text = (
         "سلام! 👋\n\n"
-        "📄 فایل `.md` یا `.txt` خود و یا متن دلخواهتان را بفرستید تا فوراً به PDF تبدیل شود.\n"
-        "✨ ویژگی جدید: شکست خودکار صفحات در عنوان‌های اصلی (Smart Page Break).\n\n"
+        "📄 فایل `.md`/`.txt` یا متن دلخواهتان را بفرستید تا فوراً به PDF تبدیل شود.\n"
+        "💡 نکته: برای نام‌گذاری سفارشی فایل خروجی، کافیست یک هشتگ مثل `#فصل_اول` در متن بگذارید.\n\n"
         "⚙️ تنظیمات خروجی خود را از طریق دکمه‌های زیر تغییر دهید:"
     )
     
@@ -347,18 +374,25 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
     await start(update, context)
 
-async def process_conversion(update: Update, context: ContextTypes.DEFAULT_TYPE, md_text: str, file_title: str):
+async def process_conversion(update: Update, context: ContextTypes.DEFAULT_TYPE, md_text: str):
     chat_id = update.effective_chat.id
     orientation = user_orientations.get(chat_id, "portrait")
     compact = user_compact_modes.get(chat_id, False)
     
-    status_msg = await update.message.reply_text("⏳ در صف پردازش...")
+    # استخراج هوشمند نام فایل از هشتگ یا هدینگ
+    file_title, md_text = extract_title_and_hashtag(md_text, default_name=f"Note_{update.message.message_id}")
+    
+    # هشدار هوشمند برای فایل‌ها و متن‌های حجیم
+    if len(md_text) > 5000:
+        status_msg = await update.message.reply_text("⚠️ متن یا فایل شما حجیم است. پردازش ممکن است چند ثانیه بیشتر طول بکشد، لطفاً صبور باشید...")
+    else:
+        status_msg = await update.message.reply_text("⏳ در صف پردازش...")
     
     async with conversion_lock:
         await context.bot.edit_message_text(
             chat_id=chat_id,
             message_id=status_msg.message_id,
-            text="⚙️ در حال تولید فایل PDF با صفحه‌بندی هوشمند..."
+            text=f"⚙️ در حال رندر فرمول‌های ریاضی و تولید فایل `{file_title}.pdf`..."
         )
         
         pdf_path = f"temp_{update.message.message_id}.pdf"
@@ -400,15 +434,13 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
         md_text = f.read()
     os.remove(temp_path)
     
-    file_title = doc.file_name.rsplit('.', 1)[0]
-    await process_conversion(update, context, md_text, file_title)
+    await process_conversion(update, context, md_text)
 
 async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text
     if text.startswith('/'):
         return
-    file_title = extract_title(text, default_name=f"Note_{update.message.message_id}")
-    await process_conversion(update, context, text, file_title)
+    await process_conversion(update, context, text)
 
 if __name__ == '__main__':
     TOKEN = os.getenv("BOT_TOKEN")
