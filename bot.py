@@ -7,7 +7,7 @@ from telegram import Update
 from telegram.ext import Application, MessageHandler, filters, ContextTypes, CommandHandler
 from playwright.async_api import async_playwright
 
-# سرور وب در پس‌زمینه برای بیدار نگه داشتن سرور رایگان
+# سرور وب در پس‌زمینه برای زنده نگه داشتن محیط رایگان
 def run_dummy_server():
     port = int(os.environ.get("PORT", 8080))
     class RequestHandler(BaseHTTPRequestHandler):
@@ -26,7 +26,12 @@ HTML_TEMPLATE = """
 <head>
     <meta charset="utf-8">
     <style>
-        body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Vazirmatn", "Helvetica Neue", Arial, sans-serif; line-height: 1.6; padding: 40px; font-size: 16px; }
+        body { 
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Vazirmatn", "Helvetica Neue", Arial, sans-serif; 
+            line-height: 1.6; 
+            padding: 40px; 
+            font-size: 16px; 
+        }
         pre { background: #f4f4f4; padding: 15px; border-radius: 8px; overflow-x: auto; direction: ltr; }
         code { background: #f4f4f4; padding: 2px 5px; border-radius: 4px; font-family: monospace; }
         table { border-collapse: collapse; width: 100%; margin-bottom: 20px; }
@@ -35,13 +40,17 @@ HTML_TEMPLATE = """
         img { max-width: 100%; height: auto; border-radius: 8px; }
         blockquote { border-left: 4px solid #ddd; margin: 0; padding-left: 15px; color: #555; }
     </style>
+    <!-- تنظیمات و اسکریپت MathJax -->
     <script>
-        MathJax = {
-            tex: { inlineMath: [['$', '$'], ['\\\\(', '\\\\)']], displayMath: [['$$', '$$'], ['\\\\[', '\\\\]']] },
-            startup: { pageReady: () => { return MathJax.startup.defaultPageReady().then(() => { document.body.innerHTML += '<div id="mathjax-done"></div>'; }); } }
+        window.MathJax = {
+            tex: {
+                inlineMath: [['$', '$'], ['\\\\(', '\\\\)']],
+                displayMath: [['$$', '$$'], ['\\\\[', '\\\\]']]
+            },
+            svg: { fontCache: 'global' }
         };
     </script>
-    <script id="MathJax-script" async src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js"></script>
+    <script id="MathJax-script" async src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-chtml.js"></script>
 </head>
 <body>
     {{content}}
@@ -58,15 +67,29 @@ async def generate_pdf(md_text, output_pdf_path):
         temp_html_path = f.name
         
     async with async_playwright() as p:
-        # تنظیمات بهینه‌سازی شده برای مصرف کمِ رم در سرور رایگان
         browser = await p.chromium.launch(
             headless=True,
             args=['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage', '--disable-gpu']
         )
         page = await browser.new_page()
-        await page.goto(f"file://{temp_html_path}")
-        await page.wait_for_selector('#mathjax-done', timeout=15000)
-        await page.pdf(path=output_pdf_path, format="A4", print_background=True, margin={"top": "20mm", "bottom": "20mm", "left": "20mm", "right": "20mm"})
+        await page.goto(f"file://{temp_html_path}", wait_until="networkidle")
+        
+        # منتظر ماندن هوشمند و دقیق برای رندر شدن کامل فرمول‌های ریاضی MathJax
+        await page.evaluate("""
+            async () => {
+                if (window.MathJax && window.MathJax.typesetPromise) {
+                    await window.MathJax.typesetPromise();
+                }
+            }
+        """)
+        
+        # تولید خروجی PDF
+        await page.pdf(
+            path=output_pdf_path, 
+            format="A4", 
+            print_background=True, 
+            margin={"top": "20mm", "bottom": "20mm", "left": "20mm", "right": "20mm"}
+        )
         await browser.close()
         
     os.remove(temp_html_path)
@@ -83,7 +106,8 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
     status_msg = await update.message.reply_text("📥 در حال پردازش فایل...")
     try:
         file = await context.bot.get_file(document.file_id)
-        md_path, pdf_path = f"{document.file_id}.md", f"{document.file_id}.pdf"
+        md_path = f"{document.file_id}.md"
+        pdf_path = f"{document.file_id}.pdf"
         await file.download_to_drive(md_path)
         
         with open(md_path, 'r', encoding='utf-8') as f:
@@ -107,10 +131,10 @@ if __name__ == '__main__':
     if not TOKEN:
         print("❌ Error: BOT_TOKEN is missing! Please set it in Environment Variables.")
     else:
-        # ۱. سرور وب را به پس‌زمینه می‌فرستیم
+        # ۱. سرور وب در پس‌زمینه
         threading.Thread(target=run_dummy_server, daemon=True).start()
         
-        # ۲. ربات تلگرام را در هسته اصلی اجرا می‌کنیم
+        # ۲. اجرای ربات تلگرام در هسته اصلی
         print("✅ Starting Telegram Bot...")
         app = Application.builder().token(TOKEN).build()
         app.add_handler(CommandHandler("start", start))
