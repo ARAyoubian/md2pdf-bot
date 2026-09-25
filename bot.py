@@ -4,6 +4,8 @@ import json
 import zipfile
 import tempfile
 import markdown
+from markdown.preprocessors import Preprocessor
+from markdown.extensions import Extension
 import threading
 import asyncio
 import gc
@@ -75,9 +77,9 @@ HTML_TEMPLATE = """
 <html dir="auto">
 <head>
     <meta charset="utf-8">
-    <link rel="preconnect" href="https://fonts.googleapis.com">
-    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&family=Vazirmatn:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <link rel="preconnect" href="[https://fonts.googleapis.com](https://fonts.googleapis.com)">
+    <link rel="preconnect" href="[https://fonts.gstatic.com](https://fonts.gstatic.com)" crossorigin>
+    <link href="[https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&family=Vazirmatn:wght@400;500;600;700&display=swap](https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&family=Vazirmatn:wght@400;500;600;700&display=swap)" rel="stylesheet">
     
     <style>
         :root {
@@ -178,7 +180,7 @@ HTML_TEMPLATE = """
             display: flex;
             justify-content: center;
             align-items: center;
-            margin: 20px 0;
+            margin: 24px 0;
             background: transparent;
             page-break-inside: avoid;
             break-inside: avoid;
@@ -295,13 +297,13 @@ HTML_TEMPLATE = """
             }
         };
     </script>
-    <script id="MathJax-script" async src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-chtml.js"></script>
+    <script id="MathJax-script" async src="[https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-chtml.js](https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-chtml.js)"></script>
     
-    <script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
+    <script src="[https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js](https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js)"></script>
     <script>
         mermaid.initialize({
             startOnLoad: false,
-            theme: 'neutral',
+            theme: 'default',
             securityLevel: 'loose',
             fontFamily: 'Vazirmatn, Inter, sans-serif',
             flowchart: { useMaxWidth: true, htmlLabels: true, curve: 'basis' }
@@ -326,53 +328,55 @@ def process_callouts(md_text):
     md_text = md_text.replace('<div class="callout-important-marker"></div>', '<blockquote><strong>🔥 مهم:</strong>')
     return md_text
 
-def sanitize_mermaid_code(code: str) -> str:
-    lines = code.strip().splitlines()
-    cleaned_lines = []
+def format_node_label(inner_text: str) -> str:
+    cleaned = inner_text.strip()
+    if (cleaned.startswith('"') and cleaned.endswith('"')) or (cleaned.startswith("'") and cleaned.endswith("'")):
+        return f'[{cleaned}]'
+    # جلوگیری از تداخل کاراکترهای اسلش، پرانتز و کوتیشن در متن فارسی
+    escaped = cleaned.replace('"', '#quot;').replace("'", '#39;')
+    return f'["{escaped}"]'
+
+def clean_mermaid_code(code: str) -> str:
+    lines = code.splitlines()
+    res = []
     for line in lines:
         stripped = line.strip()
         if not stripped:
             continue
-        # رفع خودکار کاراکترهای داخل براکت‌ها جهت جلوگیری از کرش Mermaid
-        def fix_brackets(match):
-            inner = match.group(1).strip()
-            if inner.startswith('"') and inner.endswith('"'):
-                return f'[{inner}]'
-            inner_escaped = inner.replace('"', "'")
-            return f'["{inner_escaped}"]'
-        
-        line_fixed = re.sub(r'\[(.*?)\]', fix_brackets, line)
-        cleaned_lines.append(line_fixed)
-    return "\n".join(cleaned_lines)
+        line_fixed = re.sub(r'\[(.*?)\]', lambda m: format_node_label(m.group(1)), line)
+        res.append(line_fixed)
+    return "\n".join(res)
 
-def extract_and_protect_mermaid(md_text):
-    mermaid_blocks = []
-    
-    # 1. حالت استاندار: ```mermaid ... ```
-    def replacer_fence(match):
-        code = match.group(1)
-        cleaned = sanitize_mermaid_code(code)
-        idx = len(mermaid_blocks)
-        mermaid_blocks.append(f'<div class="mermaid-container"><div class="mermaid">{html.escape(cleaned)}</div></div>')
-        return f"<!--MERMAID_PLACEHOLDER_{idx}-->"
+class MermaidPreprocessor(Preprocessor):
+    def run(self, lines):
+        new_lines = []
+        in_mermaid = False
+        mermaid_buf = []
 
-    pattern_fence = r"```(?:mermaid|flowchart)\r?\n([\s\S]*?)```"
-    md_text = re.sub(pattern_fence, replacer_fence, md_text, flags=re.IGNORECASE)
+        for line in lines:
+            if not in_mermaid:
+                if re.match(r"^```(?:mermaid|flowchart)\s*$", line, re.IGNORECASE):
+                    in_mermaid = True
+                    mermaid_buf = []
+                else:
+                    new_lines.append(line)
+            else:
+                if re.match(r"^```\s*$", line):
+                    in_mermaid = False
+                    raw_code = "\n".join(mermaid_buf)
+                    clean_code = clean_mermaid_code(raw_code)
+                    # تگ محافظت شده در مارک داون
+                    escaped_body = html.escape(clean_code)
+                    block = f'<div class="mermaid-container"><div class="mermaid">{escaped_body}</div></div>'
+                    new_lines.append(self.md.htmlStash.store(block))
+                else:
+                    mermaid_buf.append(line)
+                    
+        return new_lines
 
-    # 2. حالت نمودار بدون تگ mermaid: ``` ... graph TD ... ```
-    def replacer_raw_block(match):
-        full_content = match.group(1)
-        if re.search(r'^\s*(?:graph\s+(?:TD|TB|BT|RL|LR)|flowchart\s+(?:TD|TB|BT|RL|LR))', full_content, re.IGNORECASE | re.MULTILINE):
-            cleaned = sanitize_mermaid_code(full_content)
-            idx = len(mermaid_blocks)
-            mermaid_blocks.append(f'<div class="mermaid-container"><div class="mermaid">{html.escape(cleaned)}</div></div>')
-            return f"<!--MERMAID_PLACEHOLDER_{idx}-->"
-        return match.group(0)
-
-    pattern_any_fence = r"```(?:\w+)?\r?\n([\s\S]*?)```"
-    md_text = re.sub(pattern_any_fence, replacer_raw_block, md_text)
-    
-    return md_text, mermaid_blocks
+class MermaidExtension(Extension):
+    def extendMarkdown(self, md):
+        md.preprocessors.register(MermaidPreprocessor(md), 'mermaid_preprocessor', 35)
 
 def clean_filename(text):
     return re.sub(r'[\\/*?:"<>|#]', '', text).strip()[:40]
@@ -398,7 +402,6 @@ async def generate_pdf_output(md_text, output_pdf_path, orientation="portrait", 
     await init_browser()
     
     md_text = process_callouts(md_text)
-    md_text, mermaid_blocks = extract_and_protect_mermaid(md_text)
     
     configs = {
         'codehilite': {
@@ -409,13 +412,9 @@ async def generate_pdf_output(md_text, output_pdf_path, orientation="portrait", 
     
     html_content = markdown.markdown(
         md_text, 
-        extensions=['fenced_code', 'codehilite', 'tables', 'nl2br', 'mdx_math', 'toc'],
+        extensions=['fenced_code', 'codehilite', 'tables', 'nl2br', 'mdx_math', 'toc', MermaidExtension()],
         extension_configs=configs
     )
-    
-    for idx, block in enumerate(mermaid_blocks):
-        html_content = html_content.replace(f"&lt;!--MERMAID_PLACEHOLDER_{idx}--&gt;", block)
-        html_content = html_content.replace(f"<!--MERMAID_PLACEHOLDER_{idx}-->", block)
     
     classes = []
     if compact:
@@ -441,22 +440,24 @@ async def generate_pdf_output(md_text, output_pdf_path, orientation="portrait", 
         
     page = await global_browser.new_page()
     try:
-        await page.goto(f"file://{temp_html_path}", wait_until="networkidle")
+        await page.goto(f"file://{temp_html_path}", wait_until="load")
+        
+        # رندر قطعی با متد مستقل render برای هر بلوک
         await page.evaluate("""
             async () => {
                 await document.fonts.ready;
                 
                 if (window.mermaid) {
-                    try {
-                        const mNodes = document.querySelectorAll('.mermaid');
-                        if (mNodes.length > 0) {
-                            await window.mermaid.run({
-                                nodes: mNodes,
-                                suppressErrors: true
-                            });
+                    const containers = document.querySelectorAll('.mermaid');
+                    for (let i = 0; i < containers.length; i++) {
+                        const el = containers[i];
+                        const code = el.textContent || el.innerText;
+                        try {
+                            const { svg } = await window.mermaid.render('mermaid-svg-' + i, code);
+                            el.innerHTML = svg;
+                        } catch (err) {
+                            console.error('Mermaid block failed:', err);
                         }
-                    } catch (e) {
-                        console.error('Mermaid render error ignored:', e);
                     }
                 }
 
@@ -464,7 +465,7 @@ async def generate_pdf_output(md_text, output_pdf_path, orientation="portrait", 
                     try {
                         await window.MathJax.typesetPromise();
                     } catch (e) {
-                        console.error('MathJax error ignored:', e);
+                        console.error('MathJax error:', e);
                     }
                 }
             }
