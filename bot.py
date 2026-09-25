@@ -4,12 +4,9 @@ import json
 import zipfile
 import tempfile
 import markdown
-from markdown.preprocessors import Preprocessor
-from markdown.extensions import Extension
 import threading
 import asyncio
 import gc
-import html
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
@@ -77,9 +74,9 @@ HTML_TEMPLATE = """
 <html dir="auto">
 <head>
     <meta charset="utf-8">
-    <link rel="preconnect" href="[https://fonts.googleapis.com](https://fonts.googleapis.com)">
-    <link rel="preconnect" href="[https://fonts.gstatic.com](https://fonts.gstatic.com)" crossorigin>
-    <link href="[https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&family=Vazirmatn:wght@400;500;600;700&display=swap](https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&family=Vazirmatn:wght@400;500;600;700&display=swap)" rel="stylesheet">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&family=Vazirmatn:wght@400;500;600;700&display=swap" rel="stylesheet">
     
     <style>
         :root {
@@ -175,22 +172,18 @@ HTML_TEMPLATE = """
             margin: 16px 0;
         }
 
-        .mermaid-container {
-            width: 100%;
+        /* استایل اختصاصی نمودارها */
+        .mermaid-box {
             display: flex;
             justify-content: center;
             align-items: center;
-            margin: 24px 0;
+            width: 100%;
+            margin: 20px 0;
             background: transparent;
             page-break-inside: avoid;
             break-inside: avoid;
         }
-        .mermaid {
-            text-align: center;
-            font-family: 'Vazirmatn', 'Inter', sans-serif !important;
-            direction: ltr !important;
-        }
-        .mermaid svg {
+        .mermaid-box svg {
             max-width: 100% !important;
             height: auto !important;
         }
@@ -297,16 +290,14 @@ HTML_TEMPLATE = """
             }
         };
     </script>
-    <script id="MathJax-script" async src="[https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-chtml.js](https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-chtml.js)"></script>
-    
-    <script src="[https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js](https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js)"></script>
+    <script id="MathJax-script" async src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-chtml.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
     <script>
         mermaid.initialize({
             startOnLoad: false,
-            theme: 'default',
+            theme: 'neutral',
             securityLevel: 'loose',
-            fontFamily: 'Vazirmatn, Inter, sans-serif',
-            flowchart: { useMaxWidth: true, htmlLabels: true, curve: 'basis' }
+            fontFamily: 'Vazirmatn, Inter, sans-serif'
         });
     </script>
 </head>
@@ -327,56 +318,6 @@ def process_callouts(md_text):
     md_text = md_text.replace('<div class="callout-tip-marker"></div>', '<blockquote><strong>💡 پیشنهاد:</strong>')
     md_text = md_text.replace('<div class="callout-important-marker"></div>', '<blockquote><strong>🔥 مهم:</strong>')
     return md_text
-
-def format_node_label(inner_text: str) -> str:
-    cleaned = inner_text.strip()
-    if (cleaned.startswith('"') and cleaned.endswith('"')) or (cleaned.startswith("'") and cleaned.endswith("'")):
-        return f'[{cleaned}]'
-    # جلوگیری از تداخل کاراکترهای اسلش، پرانتز و کوتیشن در متن فارسی
-    escaped = cleaned.replace('"', '#quot;').replace("'", '#39;')
-    return f'["{escaped}"]'
-
-def clean_mermaid_code(code: str) -> str:
-    lines = code.splitlines()
-    res = []
-    for line in lines:
-        stripped = line.strip()
-        if not stripped:
-            continue
-        line_fixed = re.sub(r'\[(.*?)\]', lambda m: format_node_label(m.group(1)), line)
-        res.append(line_fixed)
-    return "\n".join(res)
-
-class MermaidPreprocessor(Preprocessor):
-    def run(self, lines):
-        new_lines = []
-        in_mermaid = False
-        mermaid_buf = []
-
-        for line in lines:
-            if not in_mermaid:
-                if re.match(r"^```(?:mermaid|flowchart)\s*$", line, re.IGNORECASE):
-                    in_mermaid = True
-                    mermaid_buf = []
-                else:
-                    new_lines.append(line)
-            else:
-                if re.match(r"^```\s*$", line):
-                    in_mermaid = False
-                    raw_code = "\n".join(mermaid_buf)
-                    clean_code = clean_mermaid_code(raw_code)
-                    # تگ محافظت شده در مارک داون
-                    escaped_body = html.escape(clean_code)
-                    block = f'<div class="mermaid-container"><div class="mermaid">{escaped_body}</div></div>'
-                    new_lines.append(self.md.htmlStash.store(block))
-                else:
-                    mermaid_buf.append(line)
-                    
-        return new_lines
-
-class MermaidExtension(Extension):
-    def extendMarkdown(self, md):
-        md.preprocessors.register(MermaidPreprocessor(md), 'mermaid_preprocessor', 35)
 
 def clean_filename(text):
     return re.sub(r'[\\/*?:"<>|#]', '', text).strip()[:40]
@@ -403,6 +344,7 @@ async def generate_pdf_output(md_text, output_pdf_path, orientation="portrait", 
     
     md_text = process_callouts(md_text)
     
+    # ساختار کامپایلر مارک‌داون بدون دستکاری و دقیقاً طبق سورس پایدار اولیه
     configs = {
         'codehilite': {
             'guess_lang': False,
@@ -412,7 +354,7 @@ async def generate_pdf_output(md_text, output_pdf_path, orientation="portrait", 
     
     html_content = markdown.markdown(
         md_text, 
-        extensions=['fenced_code', 'codehilite', 'tables', 'nl2br', 'mdx_math', 'toc', MermaidExtension()],
+        extensions=['fenced_code', 'codehilite', 'tables', 'nl2br', 'mdx_math', 'toc'],
         extension_configs=configs
     )
     
@@ -440,27 +382,44 @@ async def generate_pdf_output(md_text, output_pdf_path, orientation="portrait", 
         
     page = await global_browser.new_page()
     try:
-        await page.goto(f"file://{temp_html_path}", wait_until="load")
+        await page.goto(f"file://{temp_html_path}", wait_until="networkidle")
         
-        # رندر قطعی با متد مستقل render برای هر بلوک
+        # تبدیل مستقیم کدهای تولید شده توسط fenced_code به نمودار در مرورگر
         await page.evaluate("""
             async () => {
                 await document.fonts.ready;
-                
+
+                // تبدیل المان‌های ساخته شده توسط markdown به نمودار SVG
                 if (window.mermaid) {
-                    const containers = document.querySelectorAll('.mermaid');
-                    for (let i = 0; i < containers.length; i++) {
-                        const el = containers[i];
-                        const code = el.textContent || el.innerText;
+                    const codeBlocks = Array.from(document.querySelectorAll('code.language-mermaid, pre.mermaid'));
+                    
+                    // بررسی تمام بلاک‌های کدی که با سینتکس فلوچارت شروع شده‌اند
+                    const allPres = document.querySelectorAll('pre');
+                    for (const p of allPres) {
+                        const txt = p.innerText.trim();
+                        if (/^(graph\\s+[A-Z]{2}|flowchart\\s+[A-Z]{2})/i.test(txt)) {
+                            if (!codeBlocks.includes(p)) codeBlocks.push(p);
+                        }
+                    }
+
+                    for (let i = 0; i < codeBlocks.length; i++) {
+                        const el = codeBlocks[i];
+                        const container = el.closest('pre') || el;
+                        let code = el.innerText.trim();
+                        
                         try {
-                            const { svg } = await window.mermaid.render('mermaid-svg-' + i, code);
-                            el.innerHTML = svg;
+                            const { svg } = await window.mermaid.render('diagram_' + i, code);
+                            const div = document.createElement('div');
+                            div.className = 'mermaid-box';
+                            div.innerHTML = svg;
+                            container.parentNode.replaceChild(div, container);
                         } catch (err) {
-                            console.error('Mermaid block failed:', err);
+                            console.error('Mermaid render issue:', err);
                         }
                     }
                 }
 
+                // رندر فرمول‌های ریاضی MathJax
                 if (window.MathJax && window.MathJax.typesetPromise) {
                     try {
                         await window.MathJax.typesetPromise();
