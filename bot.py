@@ -7,6 +7,7 @@ import markdown
 import threading
 import asyncio
 import gc
+import html
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
@@ -172,18 +173,22 @@ HTML_TEMPLATE = """
             margin: 16px 0;
         }
 
-        /* عدم اعمال استایل کادر کد بر روی نمودارهای Mermaid */
-        pre.mermaid {
-            background-color: transparent !important;
-            border: none !important;
-            text-align: center !important;
-            direction: ltr !important;
-            padding: 10px 0 !important;
-            margin: 20px 0 !important;
+        .mermaid-container {
+            width: 100%;
             display: flex;
             justify-content: center;
+            align-items: center;
+            margin: 20px 0;
+            background: transparent;
+            page-break-inside: avoid;
+            break-inside: avoid;
         }
-        pre.mermaid svg {
+        .mermaid {
+            text-align: center;
+            font-family: 'Vazirmatn', 'Inter', sans-serif !important;
+            direction: ltr !important;
+        }
+        .mermaid svg {
             max-width: 100% !important;
             height: auto !important;
         }
@@ -292,14 +297,14 @@ HTML_TEMPLATE = """
     </script>
     <script id="MathJax-script" async src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-chtml.js"></script>
     
-    <!-- لود Mermaid برای رسم فلوچارت‌ها و نمودارهای درختی -->
     <script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
     <script>
         mermaid.initialize({
             startOnLoad: false,
-            theme: 'default',
+            theme: 'neutral',
             securityLevel: 'loose',
-            flowchart: { useMaxWidth: true, htmlLabels: true }
+            fontFamily: 'Vazirmatn, Inter, sans-serif',
+            flowchart: { useMaxWidth: true, htmlLabels: true, curve: 'basis' }
         });
     </script>
 </head>
@@ -321,10 +326,53 @@ def process_callouts(md_text):
     md_text = md_text.replace('<div class="callout-important-marker"></div>', '<blockquote><strong>🔥 مهم:</strong>')
     return md_text
 
-def process_mermaid(md_text):
-    # جداسازی بلوک‌های mermaid قبل از اینکه هایلایتر کد آن‌ها را خراب کند
-    pattern = r"```(?:mermaid)\r?\n([\s\S]*?)```"
-    return re.sub(pattern, r'<pre class="mermaid">\1</pre>', md_text)
+def sanitize_mermaid_code(code: str) -> str:
+    lines = code.strip().splitlines()
+    cleaned_lines = []
+    for line in lines:
+        stripped = line.strip()
+        if not stripped:
+            continue
+        # رفع خودکار کاراکترهای داخل براکت‌ها جهت جلوگیری از کرش Mermaid
+        def fix_brackets(match):
+            inner = match.group(1).strip()
+            if inner.startswith('"') and inner.endswith('"'):
+                return f'[{inner}]'
+            inner_escaped = inner.replace('"', "'")
+            return f'["{inner_escaped}"]'
+        
+        line_fixed = re.sub(r'\[(.*?)\]', fix_brackets, line)
+        cleaned_lines.append(line_fixed)
+    return "\n".join(cleaned_lines)
+
+def extract_and_protect_mermaid(md_text):
+    mermaid_blocks = []
+    
+    # 1. حالت استاندار: ```mermaid ... ```
+    def replacer_fence(match):
+        code = match.group(1)
+        cleaned = sanitize_mermaid_code(code)
+        idx = len(mermaid_blocks)
+        mermaid_blocks.append(f'<div class="mermaid-container"><div class="mermaid">{html.escape(cleaned)}</div></div>')
+        return f"<!--MERMAID_PLACEHOLDER_{idx}-->"
+
+    pattern_fence = r"```(?:mermaid|flowchart)\r?\n([\s\S]*?)```"
+    md_text = re.sub(pattern_fence, replacer_fence, md_text, flags=re.IGNORECASE)
+
+    # 2. حالت نمودار بدون تگ mermaid: ``` ... graph TD ... ```
+    def replacer_raw_block(match):
+        full_content = match.group(1)
+        if re.search(r'^\s*(?:graph\s+(?:TD|TB|BT|RL|LR)|flowchart\s+(?:TD|TB|BT|RL|LR))', full_content, re.IGNORECASE | re.MULTILINE):
+            cleaned = sanitize_mermaid_code(full_content)
+            idx = len(mermaid_blocks)
+            mermaid_blocks.append(f'<div class="mermaid-container"><div class="mermaid">{html.escape(cleaned)}</div></div>')
+            return f"<!--MERMAID_PLACEHOLDER_{idx}-->"
+        return match.group(0)
+
+    pattern_any_fence = r"```(?:\w+)?\r?\n([\s\S]*?)```"
+    md_text = re.sub(pattern_any_fence, replacer_raw_block, md_text)
+    
+    return md_text, mermaid_blocks
 
 def clean_filename(text):
     return re.sub(r'[\\/*?:"<>|#]', '', text).strip()[:40]
@@ -350,7 +398,7 @@ async def generate_pdf_output(md_text, output_pdf_path, orientation="portrait", 
     await init_browser()
     
     md_text = process_callouts(md_text)
-    md_text = process_mermaid(md_text)
+    md_text, mermaid_blocks = extract_and_protect_mermaid(md_text)
     
     configs = {
         'codehilite': {
@@ -364,6 +412,10 @@ async def generate_pdf_output(md_text, output_pdf_path, orientation="portrait", 
         extensions=['fenced_code', 'codehilite', 'tables', 'nl2br', 'mdx_math', 'toc'],
         extension_configs=configs
     )
+    
+    for idx, block in enumerate(mermaid_blocks):
+        html_content = html_content.replace(f"&lt;!--MERMAID_PLACEHOLDER_{idx}--&gt;", block)
+        html_content = html_content.replace(f"<!--MERMAID_PLACEHOLDER_{idx}-->", block)
     
     classes = []
     if compact:
@@ -394,16 +446,26 @@ async def generate_pdf_output(md_text, output_pdf_path, orientation="portrait", 
             async () => {
                 await document.fonts.ready;
                 
-                // رندر نمودارها و درخت‌های Mermaid
                 if (window.mermaid) {
-                    await window.mermaid.run({
-                        querySelector: '.mermaid'
-                    });
+                    try {
+                        const mNodes = document.querySelectorAll('.mermaid');
+                        if (mNodes.length > 0) {
+                            await window.mermaid.run({
+                                nodes: mNodes,
+                                suppressErrors: true
+                            });
+                        }
+                    } catch (e) {
+                        console.error('Mermaid render error ignored:', e);
+                    }
                 }
 
-                // رندر فرمول‌های ریاضی
                 if (window.MathJax && window.MathJax.typesetPromise) {
-                    await window.MathJax.typesetPromise();
+                    try {
+                        await window.MathJax.typesetPromise();
+                    } catch (e) {
+                        console.error('MathJax error ignored:', e);
+                    }
                 }
             }
         """)
