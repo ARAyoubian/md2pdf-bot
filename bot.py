@@ -172,6 +172,22 @@ HTML_TEMPLATE = """
             margin: 16px 0;
         }
 
+        /* عدم اعمال استایل کادر کد بر روی نمودارهای Mermaid */
+        pre.mermaid {
+            background-color: transparent !important;
+            border: none !important;
+            text-align: center !important;
+            direction: ltr !important;
+            padding: 10px 0 !important;
+            margin: 20px 0 !important;
+            display: flex;
+            justify-content: center;
+        }
+        pre.mermaid svg {
+            max-width: 100% !important;
+            height: auto !important;
+        }
+
         code {
             font-family: 'JetBrains Mono', monospace;
             background-color: var(--bg-code);
@@ -275,6 +291,17 @@ HTML_TEMPLATE = """
         };
     </script>
     <script id="MathJax-script" async src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-chtml.js"></script>
+    
+    <!-- لود Mermaid برای رسم فلوچارت‌ها و نمودارهای درختی -->
+    <script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
+    <script>
+        mermaid.initialize({
+            startOnLoad: false,
+            theme: 'default',
+            securityLevel: 'loose',
+            flowchart: { useMaxWidth: true, htmlLabels: true }
+        });
+    </script>
 </head>
 <body class="{{BODY_CLASSES}}">
     {{content}}
@@ -293,6 +320,11 @@ def process_callouts(md_text):
     md_text = md_text.replace('<div class="callout-tip-marker"></div>', '<blockquote><strong>💡 پیشنهاد:</strong>')
     md_text = md_text.replace('<div class="callout-important-marker"></div>', '<blockquote><strong>🔥 مهم:</strong>')
     return md_text
+
+def process_mermaid(md_text):
+    # جداسازی بلوک‌های mermaid قبل از اینکه هایلایتر کد آن‌ها را خراب کند
+    pattern = r"```(?:mermaid)\r?\n([\s\S]*?)```"
+    return re.sub(pattern, r'<pre class="mermaid">\1</pre>', md_text)
 
 def clean_filename(text):
     return re.sub(r'[\\/*?:"<>|#]', '', text).strip()[:40]
@@ -318,6 +350,7 @@ async def generate_pdf_output(md_text, output_pdf_path, orientation="portrait", 
     await init_browser()
     
     md_text = process_callouts(md_text)
+    md_text = process_mermaid(md_text)
     
     configs = {
         'codehilite': {
@@ -360,6 +393,15 @@ async def generate_pdf_output(md_text, output_pdf_path, orientation="portrait", 
         await page.evaluate("""
             async () => {
                 await document.fonts.ready;
+                
+                // رندر نمودارها و درخت‌های Mermaid
+                if (window.mermaid) {
+                    await window.mermaid.run({
+                        querySelector: '.mermaid'
+                    });
+                }
+
+                // رندر فرمول‌های ریاضی
                 if (window.MathJax && window.MathJax.typesetPromise) {
                     await window.MathJax.typesetPromise();
                 }
@@ -502,7 +544,6 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
                             with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
                                 content = f.read()
                             
-                            # نام فایل اصلی داخل زیپ به عنوان نام خروجی PDF تعیین می‌شود
                             title = clean_filename(file_name.rsplit('.', 1)[0])
                             out_pdf = os.path.abspath(f"zip_out_{title}_{os.getpid()}.pdf")
                             
@@ -558,4 +599,3 @@ if __name__ == '__main__':
         app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
         
         app.run_polling()
-
