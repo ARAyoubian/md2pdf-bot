@@ -19,6 +19,7 @@ from telegram.ext import (
 )
 from playwright.async_api import async_playwright
 from pygments.formatters import HtmlFormatter
+import mermaid as md_mermaid
 
 CODE_STYLE_LIGHT = HtmlFormatter(style="friendly").get_style_defs('.codehilite')
 
@@ -172,20 +173,18 @@ HTML_TEMPLATE = """
             margin: 16px 0;
         }
 
-        /* استایل اختصاصی نمودارها */
-        .mermaid-box {
+        .mermaid-diagram {
             display: flex;
             justify-content: center;
             align-items: center;
+            margin: 25px 0;
             width: 100%;
-            margin: 20px 0;
-            background: transparent;
             page-break-inside: avoid;
             break-inside: avoid;
         }
-        .mermaid-box svg {
-            max-width: 100% !important;
-            height: auto !important;
+        .mermaid-diagram img {
+            max-width: 100%;
+            height: auto;
         }
 
         code {
@@ -291,15 +290,6 @@ HTML_TEMPLATE = """
         };
     </script>
     <script id="MathJax-script" async src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-chtml.js"></script>
-    <script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
-    <script>
-        mermaid.initialize({
-            startOnLoad: false,
-            theme: 'neutral',
-            securityLevel: 'loose',
-            fontFamily: 'Vazirmatn, Inter, sans-serif'
-        });
-    </script>
 </head>
 <body class="{{BODY_CLASSES}}">
     {{content}}
@@ -318,6 +308,19 @@ def process_callouts(md_text):
     md_text = md_text.replace('<div class="callout-tip-marker"></div>', '<blockquote><strong>💡 پیشنهاد:</strong>')
     md_text = md_text.replace('<div class="callout-important-marker"></div>', '<blockquote><strong>🔥 مهم:</strong>')
     return md_text
+
+def render_mermaid_blocks(md_text):
+    def replacer(match):
+        chart_code = match.group(1).strip()
+        try:
+            chart = md_mermaid.Mermaid(chart_code)
+            img_url = chart.img_response.url
+            return f'\n<div class="mermaid-diagram"><img src="{img_url}" alt="Diagram"></div>\n'
+        except Exception:
+            return match.group(0)
+
+    pattern = r"```(?:mermaid|flowchart)\r?\n([\s\S]*?)```"
+    return re.sub(pattern, replacer, md_text, flags=re.IGNORECASE)
 
 def clean_filename(text):
     return re.sub(r'[\\/*?:"<>|#]', '', text).strip()[:40]
@@ -343,8 +346,8 @@ async def generate_pdf_output(md_text, output_pdf_path, orientation="portrait", 
     await init_browser()
     
     md_text = process_callouts(md_text)
+    md_text = render_mermaid_blocks(md_text)
     
-    # ساختار کامپایلر مارک‌داون بدون دستکاری و دقیقاً طبق سورس پایدار اولیه
     configs = {
         'codehilite': {
             'guess_lang': False,
@@ -383,49 +386,11 @@ async def generate_pdf_output(md_text, output_pdf_path, orientation="portrait", 
     page = await global_browser.new_page()
     try:
         await page.goto(f"file://{temp_html_path}", wait_until="networkidle")
-        
-        # تبدیل مستقیم کدهای تولید شده توسط fenced_code به نمودار در مرورگر
         await page.evaluate("""
             async () => {
                 await document.fonts.ready;
-
-                // تبدیل المان‌های ساخته شده توسط markdown به نمودار SVG
-                if (window.mermaid) {
-                    const codeBlocks = Array.from(document.querySelectorAll('code.language-mermaid, pre.mermaid'));
-                    
-                    // بررسی تمام بلاک‌های کدی که با سینتکس فلوچارت شروع شده‌اند
-                    const allPres = document.querySelectorAll('pre');
-                    for (const p of allPres) {
-                        const txt = p.innerText.trim();
-                        if (/^(graph\\s+[A-Z]{2}|flowchart\\s+[A-Z]{2})/i.test(txt)) {
-                            if (!codeBlocks.includes(p)) codeBlocks.push(p);
-                        }
-                    }
-
-                    for (let i = 0; i < codeBlocks.length; i++) {
-                        const el = codeBlocks[i];
-                        const container = el.closest('pre') || el;
-                        let code = el.innerText.trim();
-                        
-                        try {
-                            const { svg } = await window.mermaid.render('diagram_' + i, code);
-                            const div = document.createElement('div');
-                            div.className = 'mermaid-box';
-                            div.innerHTML = svg;
-                            container.parentNode.replaceChild(div, container);
-                        } catch (err) {
-                            console.error('Mermaid render issue:', err);
-                        }
-                    }
-                }
-
-                // رندر فرمول‌های ریاضی MathJax
                 if (window.MathJax && window.MathJax.typesetPromise) {
-                    try {
-                        await window.MathJax.typesetPromise();
-                    } catch (e) {
-                        console.error('MathJax error:', e);
-                    }
+                    await window.MathJax.typesetPromise();
                 }
             }
         """)
