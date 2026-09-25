@@ -19,7 +19,6 @@ from telegram.ext import (
 )
 from playwright.async_api import async_playwright
 from pygments.formatters import HtmlFormatter
-import mermaid as md_mermaid
 
 CODE_STYLE_LIGHT = HtmlFormatter(style="friendly").get_style_defs('.codehilite')
 
@@ -173,18 +172,19 @@ HTML_TEMPLATE = """
             margin: 16px 0;
         }
 
-        .mermaid-diagram {
+        .mermaid-wrapper {
             display: flex;
             justify-content: center;
             align-items: center;
-            margin: 25px 0;
             width: 100%;
+            margin: 24px 0;
+            background: transparent;
             page-break-inside: avoid;
             break-inside: avoid;
         }
-        .mermaid-diagram img {
-            max-width: 100%;
-            height: auto;
+        .mermaid-wrapper svg {
+            max-width: 100% !important;
+            height: auto !important;
         }
 
         code {
@@ -290,6 +290,16 @@ HTML_TEMPLATE = """
         };
     </script>
     <script id="MathJax-script" async src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-chtml.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
+    <script>
+        mermaid.initialize({
+            startOnLoad: false,
+            theme: 'default',
+            securityLevel: 'loose',
+            fontFamily: 'Vazirmatn, Inter, sans-serif',
+            flowchart: { useMaxWidth: true, htmlLabels: true, curve: 'basis' }
+        });
+    </script>
 </head>
 <body class="{{BODY_CLASSES}}">
     {{content}}
@@ -308,19 +318,6 @@ def process_callouts(md_text):
     md_text = md_text.replace('<div class="callout-tip-marker"></div>', '<blockquote><strong>💡 پیشنهاد:</strong>')
     md_text = md_text.replace('<div class="callout-important-marker"></div>', '<blockquote><strong>🔥 مهم:</strong>')
     return md_text
-
-def render_mermaid_blocks(md_text):
-    def replacer(match):
-        chart_code = match.group(1).strip()
-        try:
-            chart = md_mermaid.Mermaid(chart_code)
-            img_url = chart.img_response.url
-            return f'\n<div class="mermaid-diagram"><img src="{img_url}" alt="Diagram"></div>\n'
-        except Exception:
-            return match.group(0)
-
-    pattern = r"```(?:mermaid|flowchart)\r?\n([\s\S]*?)```"
-    return re.sub(pattern, replacer, md_text, flags=re.IGNORECASE)
 
 def clean_filename(text):
     return re.sub(r'[\\/*?:"<>|#]', '', text).strip()[:40]
@@ -346,7 +343,6 @@ async def generate_pdf_output(md_text, output_pdf_path, orientation="portrait", 
     await init_browser()
     
     md_text = process_callouts(md_text)
-    md_text = render_mermaid_blocks(md_text)
     
     configs = {
         'codehilite': {
@@ -386,11 +382,68 @@ async def generate_pdf_output(md_text, output_pdf_path, orientation="portrait", 
     page = await global_browser.new_page()
     try:
         await page.goto(f"file://{temp_html_path}", wait_until="networkidle")
+        
         await page.evaluate("""
             async () => {
                 await document.fonts.ready;
+
+                function sanitizeMermaid(rawText) {
+                    const lines = rawText.split('\\n');
+                    const cleanLines = [];
+                    for (let line of lines) {
+                        let trimmed = line.trim();
+                        if (!trimmed) continue;
+                        
+                        // تبدیل براکت‌های حاوی متن فارسی، اسلش یا <br> به فرم استاندارد دابل‌کوتیشن
+                        trimmed = trimmed.replace(/\\[([^\\]]+)\\]/g, (match, inner) => {
+                            inner = inner.trim();
+                            if ((inner.startsWith('"') && inner.endsWith('"')) || (inner.startsWith("'") && inner.endsWith("'"))) {
+                                return `[${inner}]`;
+                            }
+                            const escaped = inner.replace(/"/g, "'");
+                            return `["${escaped}"]`;
+                        });
+                        cleanLines.push(trimmed);
+                    }
+                    return cleanLines.join('\\n');
+                }
+
+                if (window.mermaid) {
+                    const preElements = Array.from(document.querySelectorAll('pre'));
+                    let counter = 0;
+                    
+                    for (const pre of preElements) {
+                        const rawCode = pre.innerText.trim();
+                        // تشخیص بلوک‌های دیاگرام حتی اگر با codehilite کلاسه شده باشند
+                        if (/^(flowchart|graph|subgraph|sequenceDiagram|classDiagram|stateDiagram|erDiagram)/i.test(rawCode)) {
+                            const cleanCode = sanitizeMermaid(rawCode);
+                            counter++;
+                            const diagramId = 'mermaid_diagram_' + counter;
+                            try {
+                                const { svg } = await window.mermaid.render(diagramId, cleanCode);
+                                const wrapper = document.createElement('div');
+                                wrapper.className = 'mermaid-wrapper';
+                                wrapper.innerHTML = svg;
+                                
+                                const target = pre.closest('.codehilite') || pre;
+                                target.parentNode.replaceChild(wrapper, target);
+                            } catch (e) {
+                                console.error('Mermaid render error on block ' + counter, e);
+                                const errEl = document.getElementById(diagramId);
+                                if (errEl) errEl.remove();
+                                const errDiv = document.getElementById('d' + diagramId);
+                                if (errDiv) errDiv.remove();
+                            }
+                        }
+                    }
+                }
+
                 if (window.MathJax && window.MathJax.typesetPromise) {
-                    await window.MathJax.typesetPromise();
+                    try {
+                        await window.MathJax.typesetPromise();
+                    } catch (e) {
+                        console.error('MathJax error:', e);
+                    }
                 }
             }
         """)
