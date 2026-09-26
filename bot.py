@@ -297,6 +297,33 @@ HTML_TEMPLATE = """
 </html>
 """
 
+def auto_repair_latex(md_text: str) -> str:
+    """ترمیم خودکار بک‌اسلش‌های حذف یا تبدیل‌شده در دستورات LaTeX"""
+    # 1. بازیابی Form Feed (\f -> \x0c) به دستور کسر
+    md_text = re.sub(r'[\x0c]rac\b', r'\\frac', md_text)
+    
+    # 2. بازیابی کاراکتر Tab (\t) به دستورات ریاضی
+    md_text = re.sub(r'\text\b', r'\\text', md_text)
+    md_text = re.sub(r'\times\b', r'\\times', md_text)
+    md_text = re.sub(r'\theta\b', r'\\theta', md_text)
+    
+    # 3. بازیابی کاراکتر Carriage Return (\r) یا فاصله قبل از ightarrow
+    md_text = re.sub(r'[\r\n\x0d\s]ightarrow\b', r' \\rightarrow ', md_text)
+    
+    # 4. بازیابی دستورات تقریب (pprox یا با کاراکتر \a)
+    md_text = re.sub(r'[\x07\s]pprox\b', r' \\approx ', md_text)
+    
+    # 5. بازیابی محیط‌های ماتریس (\b / Backspace به begin)
+    md_text = re.sub(r'[\x08\s]?egin\b', r'\\begin', md_text)
+    
+    # 6. بازیابی نماد چگالی (\rho به جای ho درون محیط‌های فرمول)
+    md_text = re.sub(r'(?<=\$|\(|\[\vert{}\s)ho(?=\$\vert{}\)\vert{}\]|\s|:)', r'\\rho', md_text)
+    
+    # 7. ترمیم اسلش تک به جفت‌اسلش برای شکست سطرهای ماتریس
+    md_text = re.sub(r'(?<=\d)\s*\\\s*(?=\d)', r' \\\\ ', md_text)
+    
+    return md_text
+
 def process_callouts(md_text):
     md_text = re.sub(r'>\s*\[!NOTE\]', '<div class="callout-note-marker"></div>', md_text)
     md_text = re.sub(r'>\s*\[!WARNING\]', '<div class="callout-warning-marker"></div>', md_text)
@@ -318,7 +345,6 @@ def clean_mermaid_script(code: str) -> str:
         if not line_str:
             continue
 
-        # اصلاح ساختار subgraph هایی با عناوین فاصله‌دار یا فارسی
         sg_match = re.match(r'^subgraph\s+(.+)$', line_str, re.IGNORECASE)
         if sg_match:
             title = sg_match.group(1).strip()
@@ -327,7 +353,6 @@ def clean_mermaid_script(code: str) -> str:
                 cleaned_lines.append(f'subgraph sg_{sg_idx} ["{title}"]')
                 continue
 
-        # اصلاح و کوتیشن‌گذاری خودکار داخل براکت‌ها جهت پشتیبانی از اسلش / دونقطه : و <br>
         def quote_bracket(m):
             inner = m.group(1).strip()
             if (inner.startswith('"') and inner.endswith('"')) or (inner.startswith("'") and inner.endswith("'")):
@@ -345,7 +370,6 @@ def render_mermaid_blocks(md_text):
         chart_code = match.group(1).strip()
         cleaned_code = clean_mermaid_script(chart_code)
         
-        # تلاش اول با کد اصلاح‌شده و استاندارد
         try:
             chart = md_mermaid.Mermaid(cleaned_code)
             img_url = chart.img_response.url
@@ -353,7 +377,6 @@ def render_mermaid_blocks(md_text):
         except Exception:
             pass
 
-        # تلاش دوم به عنوان پشتیبان با کد خام
         try:
             chart = md_mermaid.Mermaid(chart_code)
             img_url = chart.img_response.url
@@ -387,7 +410,11 @@ async def init_browser():
 async def generate_pdf_output(md_text, output_pdf_path, orientation="portrait", compact=False, columns=1):
     await init_browser()
     
+    # ۱. ترمیم فرمول‌های شکسته و بک‌اسلش‌های حذف‌شده
+    md_text = auto_repair_latex(md_text)
+    # ۲. رندر Calloutها
     md_text = process_callouts(md_text)
+    # ۳. رندر فلوچارت‌ها و دیاگرام‌های درختی
     md_text = render_mermaid_blocks(md_text)
     
     configs = {
