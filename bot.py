@@ -298,29 +298,29 @@ HTML_TEMPLATE = """
 """
 
 def auto_repair_latex(md_text: str) -> str:
-    """ترمیم خودکار بک‌اسلش‌های حذف یا تبدیل‌شده در دستورات LaTeX"""
-    # 1. بازیابی Form Feed (\f -> \x0c) به دستور کسر
+    """ترمیم خودکار بک‌اسلش‌های خراب‌شده بدون استفاده از Look-behind برای سازگاری کامل با پایتون"""
+    # 1. بازیابی Form Feed (\x0c) به دستور کسر \frac
     md_text = re.sub(r'[\x0c]rac\b', r'\\frac', md_text)
     
-    # 2. بازیابی کاراکتر Tab (\t) به دستورات ریاضی
+    # 2. بازیابی کاراکترهای Tab (\t) تبدیل‌شده به دستورات متنی و نمادهای ریاضی
     md_text = re.sub(r'\text\b', r'\\text', md_text)
     md_text = re.sub(r'\times\b', r'\\times', md_text)
     md_text = re.sub(r'\theta\b', r'\\theta', md_text)
     
-    # 3. بازیابی کاراکتر Carriage Return (\r) یا فاصله قبل از ightarrow
-    md_text = re.sub(r'[\r\n\x0d\s]ightarrow\b', r' \\rightarrow ', md_text)
+    # 3. بازیابی فلش \rightarrow
+    md_text = re.sub(r'([\r\n\x0d\s])ightarrow\b', r'\1\\rightarrow ', md_text)
     
-    # 4. بازیابی دستورات تقریب (pprox یا با کاراکتر \a)
-    md_text = re.sub(r'[\x07\s]pprox\b', r' \\approx ', md_text)
+    # 4. بازیابی دستور تقریب \approx
+    md_text = re.sub(r'([\x07\s])pprox\b', r'\1\\approx ', md_text)
     
-    # 5. بازیابی محیط‌های ماتریس (\b / Backspace به begin)
-    md_text = re.sub(r'[\x08\s]?egin\b', r'\\begin', md_text)
+    # 5. بازیابی دستور شروع ماتریس \begin
+    md_text = re.sub(r'([\x08\s]|^)egin\b', r'\1\\begin', md_text)
     
-    # 6. بازیابی نماد چگالی (\rho به جای ho درون محیط‌های فرمول)
-    md_text = re.sub(r'(?<=\$|\(|\[\vert{}\s)ho(?=\$\vert{}\)\vert{}\]|\s|:)', r'\\rho', md_text)
+    # 6. بازیابی نماد چگالی \rho به جای ho
+    md_text = re.sub(r'([$([{\s])ho([$)\],:\s])', r'\1\\rho\2', md_text)
     
-    # 7. ترمیم اسلش تک به جفت‌اسلش برای شکست سطرهای ماتریس
-    md_text = re.sub(r'(?<=\d)\s*\\\s*(?=\d)', r' \\\\ ', md_text)
+    # 7. ترمیم اسلش تکی سطر ماتریس به دو اسلش
+    md_text = re.sub(r'(\d)\s*\\\s*(\d)', r'\1 \\\\ \2', md_text)
     
     return md_text
 
@@ -410,11 +410,8 @@ async def init_browser():
 async def generate_pdf_output(md_text, output_pdf_path, orientation="portrait", compact=False, columns=1):
     await init_browser()
     
-    # ۱. ترمیم فرمول‌های شکسته و بک‌اسلش‌های حذف‌شده
     md_text = auto_repair_latex(md_text)
-    # ۲. رندر Calloutها
     md_text = process_callouts(md_text)
-    # ۳. رندر فلوچارت‌ها و دیاگرام‌های درختی
     md_text = render_mermaid_blocks(md_text)
     
     configs = {
