@@ -562,6 +562,97 @@ def auto_repair_latex(md_text: str) -> str:
     return md_text
 
 
+_FENCE_RE = re.compile(r"^\s*(```|~~~)")
+_DOLLAR_PAIR_RE = re.compile(r"\$\$(.+?)\$\$")
+
+
+def normalize_display_math(md_text: str) -> str:
+    """
+    فرمول‌های $$...$$ را به بلوک استاندارد تبدیل می‌کند (خط خالی قبل و بعد).
+    اگر $$ چسبیده به خطوط دیگر باشد، پایتون-مارک‌داون آن را درون‌خطی می‌بیند و
+    یک $ اضافه دور فرمول باقی می‌ماند.
+      • $$...$$ تک‌خطی و مستقل  → بلوک
+      • $$...$$ وسط متن یا داخل جدول → $\\displaystyle ...$ (درون‌خطی)
+      • $$ $...$ $$ (دلار تو در تو) → دلارهای داخلی حذف می‌شود
+    محتوای code block ها دست‌نخورده می‌ماند.
+    """
+    lines = md_text.split("\n")
+    out = []
+    in_fence = False
+    in_math = False
+    buf = []
+    indent = ""
+
+    def clean_inner(text):
+        text = text.strip()
+        if len(text) > 1 and text.startswith("$") and text.endswith("$"):
+            text = text.strip("$").strip()
+        return text
+
+    def emit_block(content, ind):
+        content = clean_inner(content)
+        if not content:
+            return
+        if out and out[-1].strip():
+            out.append("")
+        out.append(f"{ind}$$")
+        out.extend(f"{ind}{ln}" for ln in content.split("\n"))
+        out.append(f"{ind}$$")
+        out.append("")
+
+    def inline_repl(m):
+        inner = clean_inner(m.group(1))
+        return f"$\\displaystyle {inner}$" if inner else ""
+
+    for line in lines:
+        if in_math:
+            if "$$" in line:
+                before, _, after = line.partition("$$")
+                buf.append(before)
+                emit_block("\n".join(buf), indent)
+                in_math, buf = False, []
+                if after.strip():
+                    out.append(after)
+            else:
+                buf.append(line)
+            continue
+
+        if _FENCE_RE.match(line):
+            in_fence = not in_fence
+            out.append(line)
+            continue
+        if in_fence or "$$" not in line:
+            out.append(line)
+            continue
+
+        stripped = line.strip()
+        if stripped.startswith("|"):  # ردیف جدول
+            out.append(_DOLLAR_PAIR_RE.sub(inline_repl, line))
+            continue
+
+        whole = _DOLLAR_PAIR_RE.fullmatch(stripped)
+        if whole:
+            emit_block(whole.group(1), line[: len(line) - len(line.lstrip())])
+            continue
+
+        replaced = _DOLLAR_PAIR_RE.sub(inline_repl, line)
+        if "$$" not in replaced:
+            out.append(replaced)
+            continue
+
+        # $$ بازشده که در همین خط بسته نشده → بلوک چندخطی
+        before, _, after = line.partition("$$")
+        if before.strip():
+            out.append(before)
+        indent = line[: len(line) - len(line.lstrip())]
+        in_math, buf = True, [after]
+
+    if in_math:  # بلوک بسته‌نشده؛ بدون تغییر برگردان
+        out.append("$$")
+        out.extend(buf)
+    return "\n".join(out)
+
+
 CALLOUT_LABELS = {
     "NOTE": ("note", "📌 نکته:"),
     "WARNING": ("warning", "⚠️ هشدار:"),
@@ -657,6 +748,7 @@ def build_html(md_text, orientation="portrait", compact=False, columns=1):
         return f"\n\n{token}{len(mermaid_blocks) - 1}END\n\n"
 
     md_text = MERMAID_FENCE_RE.sub(stash_mermaid, md_text)
+    md_text = normalize_display_math(md_text)
     md_text = auto_repair_latex(md_text)
 
     body = markdown.markdown(
