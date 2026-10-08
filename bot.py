@@ -337,6 +337,11 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
 
         p { margin-top: 0; margin-bottom: 14px; }
 
+        p, li, blockquote {
+            text-align: justify;
+            text-justify: inter-word;
+        }
+
         img { max-width: 100%; height: auto; }
 
         pre, .codehilite {
@@ -559,11 +564,16 @@ def auto_repair_latex(md_text: str) -> str:
     # 7. ترمیم اسلش تکی سطر ماتریس به دو اسلش
     md_text = re.sub(r'(\d)\s*\\\s*(\d)', r'\1 \\\\ \2', md_text)
 
+    # 8. «\=» غلط است و در MathJax به‌جای مساوی، نشانهٔ بالاخط می‌سازد
+    md_text = re.sub(r'\\=', '=', md_text)
+
     return md_text
 
 
 _FENCE_RE = re.compile(r"^\s*(```|~~~)")
 _DOLLAR_PAIR_RE = re.compile(r"\$\$(.+?)\$\$")
+_TRAILING_PAIR_RE = re.compile(r"^((?:(?!\$\$).)*\S)\s*\$\$(.+?)\$\$\s*$")
+_LIST_ITEM_RE = re.compile(r"^\s*([-*+]|\d+[.)])\s")
 
 
 def normalize_display_math(md_text: str) -> str:
@@ -633,6 +643,12 @@ def normalize_display_math(md_text: str) -> str:
         whole = _DOLLAR_PAIR_RE.fullmatch(stripped)
         if whole:
             emit_block(whole.group(1), line[: len(line) - len(line.lstrip())])
+            continue
+
+        tail = _TRAILING_PAIR_RE.match(line)
+        if tail and not _LIST_ITEM_RE.match(line):
+            out.append(tail.group(1))
+            emit_block(tail.group(2), line[: len(line) - len(line.lstrip())])
             continue
 
         replaced = _DOLLAR_PAIR_RE.sub(inline_repl, line)
