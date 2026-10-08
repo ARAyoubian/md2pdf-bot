@@ -8,7 +8,7 @@
     PORT                   پورت سرور سلامت‌سنجی (پیش‌فرض 8080)
     SETTINGS_FILE          مسیر فایل تنظیمات کاربران (برای ماندگاری روی volume بگذارید)
     ALLOWED_USER_IDS       لیست آیدی عددی کاربران مجاز، جداشده با ویرگول (خالی = همه)
-    PDF_PAGE_FORMAT        اندازهٔ صفحه، مثلاً Letter یا A4 (پیش‌فرض Letter)
+    PDF_PAGE_FORMAT        اندازهٔ پیش‌فرض صفحه: A4 یا Letter (پیش‌فرض A4؛ هر کاربر از منو تغییر می‌دهد)
     MAX_TEXT_BYTES         سقف حجم فایل متنی (پیش‌فرض 2MB)
     MAX_ZIP_BYTES          سقف حجم فایل ZIP (پیش‌فرض 20MB)
     MAX_ZIP_ENTRIES        سقف تعداد فایل قابل‌تبدیل در هر ZIP (پیش‌فرض 30)
@@ -53,6 +53,8 @@ from telegram.ext import (
     filters,
 )
 
+BOT_VERSION = "r10-output-quality"
+
 logging.basicConfig(
     format="%(asctime)s %(levelname)s %(name)s: %(message)s", level=logging.INFO
 )
@@ -82,8 +84,10 @@ CONVERSION_TIMEOUT = _env_int("CONVERSION_TIMEOUT", 120)
 RENDER_TIMEOUT_MS = 60_000
 JS_HEAP_MB = _env_int("JS_HEAP_MB", 192)
 TELEGRAM_UPLOAD_LIMIT = 49 * 1024 * 1024
-PDF_PAGE_FORMAT = os.environ.get("PDF_PAGE_FORMAT", "Letter")
+PDF_PAGE_FORMAT = os.environ.get("PDF_PAGE_FORMAT", "A4")
+FONT_SIZES = ("small", "normal", "large")
 ALLOW_REMOTE_IMAGES = os.environ.get("ALLOW_REMOTE_IMAGES", "0") == "1"
+DEBUG_ERRORS = os.environ.get("DEBUG_ERRORS", "0") == "1"
 
 ALLOWED_USER_IDS = {
     int(x)
@@ -223,6 +227,9 @@ def get_conversion_settings(chat_id):
         "orientation": get_user_setting(chat_id, "orientation", "portrait"),
         "compact": get_user_setting(chat_id, "compact", False),
         "columns": get_user_setting(chat_id, "columns", 1),
+        "page_format": get_user_setting(chat_id, "page_format", PDF_PAGE_FORMAT),
+        "font_size": get_user_setting(chat_id, "font_size", "normal"),
+        "print_mode": get_user_setting(chat_id, "print_mode", False),
     }
 
 
@@ -337,6 +344,11 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
 
         p { margin-top: 0; margin-bottom: 14px; }
 
+        p, li, blockquote {
+            text-align: justify;
+            text-justify: inter-word;
+        }
+
         img { max-width: 100%; height: auto; }
 
         pre, .codehilite {
@@ -393,7 +405,6 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
             margin: 20px 0;
             font-size: 14px;
             border-radius: 6px;
-            overflow: hidden;
             box-shadow: 0 0 0 1px var(--border-color);
         }
 
@@ -445,6 +456,38 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
             margin: 0 !important;
         }
 
+        /* ───── شکست صفحه ───── */
+        thead { display: table-header-group; }
+        tfoot { display: table-footer-group; }
+        tr, img, .mermaid-diagram,
+        blockquote[class*="callout-"],
+        mjx-container[display="true"] {
+            break-inside: avoid;
+            page-break-inside: avoid;
+        }
+        h1, h2, h3, h4, h5, h6 {
+            break-after: avoid;
+            page-break-after: avoid;
+        }
+
+        /* ───── اندازهٔ فونت ───── */
+        body.font-small { zoom: 0.9; }
+        body.font-large { zoom: 1.15; }
+
+        /* ───── حالت چاپ (کم‌مصرف: بدون رنگ پس‌زمینه) ───── */
+        body.print-mode {
+            --bg-code: #ffffff;
+            --table-even: #ffffff;
+            --border-color: #9aa0a6;
+            --note-bg: #ffffff; --warning-bg: #ffffff;
+            --tip-bg: #ffffff; --important-bg: #ffffff;
+        }
+        body.print-mode th { background-color: #eceff1; }
+        body.print-mode blockquote {
+            border: 1px solid #9aa0a6;
+            border-inline-start: 4px solid #333333 !important;
+        }
+
         /* PYGMENTS_INJECTION */
     </style>
     {{SCRIPTS}}
@@ -458,11 +501,11 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
 MATHJAX_SCRIPT = r"""
     <script>
         window.MathJax = {
-            loader: { load: ['[tex]/mhchem'] },
+            loader: { load: [{{CHEM_LOAD}}] },
             tex: {
                 inlineMath: [['\\(', '\\)']],
                 displayMath: [['\\[', '\\]']],
-                packages: { '[+]': ['mhchem'] },
+                packages: { '[+]': [{{CHEM_PKG}}] },
                 processEscapes: true,
                 processEnvironments: true
             },
@@ -514,22 +557,76 @@ async ({ math, useMermaid }) => {
     }
 
     if (math) {
-        if (!window.MathJax || !MathJax.startup) {
-            throw new Error('MathJax not loaded');
+        const t0 = Date.now();
+        while (!(window.MathJax && window.MathJax.startup && window.MathJax.startup.promise)) {
+            if (Date.now() - t0 > 20000) {
+                throw new Error('MathJax script did not load');
+            }
+            await new Promise((r) => setTimeout(r, 50));
         }
-        await MathJax.startup.promise;
-        await MathJax.typesetPromise();
+        await window.MathJax.startup.promise;
+        if (typeof window.MathJax.typesetPromise !== 'function') {
+            throw new Error('MathJax started without typesetPromise');
+        }
+        await window.MathJax.typesetPromise();
     }
 
     await document.fonts.ready;
 }
 """
 
+RENDER_STATS_JS = r"""
+() => {
+    const errors = [];
+    try {
+        for (const item of MathJax.startup.document.math.toArray()) {
+            const root = item.typesetRoot;
+            if (root && root.querySelector && root.querySelector('mjx-merror')) {
+                errors.push(String(item.math).trim().slice(0, 80));
+            }
+        }
+    } catch (e) {
+        const n = document.querySelectorAll('mjx-merror').length;
+        for (let i = 0; i < n; i++) errors.push('?');
+    }
+    return {
+        arith: document.querySelectorAll('.arithmatex').length,
+        mjx: document.querySelectorAll('mjx-container').length,
+        mermaid: document.querySelectorAll('.mermaid-diagram').length,
+        mermaid_failed: document.querySelectorAll('pre.mermaid').length,
+        dollars: (document.body.innerText.match(/\$/g) || []).length,
+        math_error_count: errors.length,
+        math_errors: errors.slice(0, 20),
+    };
+}
+"""
+
 FOOTER_HTML = """
-<div style="font-family: 'DejaVu Sans', Arial, sans-serif; font-size: 10px; width: 100%; text-align: center; color: #8c959f; padding-bottom: 5px;">
-    Page <span class="pageNumber"></span> of <span class="totalPages"></span>
+<div style="font-family: 'Vazirmatn', 'Noto Sans Arabic', 'DejaVu Sans', Arial, sans-serif; font-size: 9px; width: 100%; box-sizing: border-box; padding: 0 {{PAD}}; display: flex; justify-content: space-between; align-items: center; direction: rtl; color: #8c959f;">
+    <span dir="auto" style="max-width: 70%; overflow: hidden; white-space: nowrap; text-overflow: ellipsis;">{{TITLE}}</span>
+    <span dir="rtl">صفحه <span class="pageNumber"></span> از <span class="totalPages"></span></span>
 </div>
 """
+
+
+def build_footer(title: str, pad: str) -> str:
+    return FOOTER_HTML.replace("{{PAD}}", pad).replace("{{TITLE}}", html.escape(title or ""))
+
+
+def render_warnings(stats, title=None) -> str:
+    """پیام هشدار دربارهٔ فرمول‌های خراب و نمودارهای رندرنشده (در صورت وجود)."""
+    if not stats:
+        return ""
+    prefix = f"{title}: " if title else ""
+    parts = []
+    count = stats.get("math_error_count", 0)
+    if count:
+        sample = "\n".join(f"• {e}" for e in stats.get("math_errors", [])[:5])
+        parts.append(f"⚠️ {prefix}{count} فرمول خطا دارد و در PDF قرمز نمایش داده شده:\n{sample}")
+    failed = stats.get("mermaid_failed", 0)
+    if failed:
+        parts.append(f"⚠️ {prefix}{failed} نمودار mermaid رندر نشد و به‌صورت متن ماند.")
+    return "\n\n".join(parts)[:3500]
 
 
 # ───────────────────────────── پردازش Markdown ─────────────────────────────
@@ -559,7 +656,144 @@ def auto_repair_latex(md_text: str) -> str:
     # 7. ترمیم اسلش تکی سطر ماتریس به دو اسلش
     md_text = re.sub(r'(\d)\s*\\\s*(\d)', r'\1 \\\\ \2', md_text)
 
+    # 8. «\=» غلط است و در MathJax به‌جای مساوی، نشانهٔ بالاخط می‌سازد
+    md_text = re.sub(r'\\=', '=', md_text)
+
     return md_text
+
+
+_FENCE_RE = re.compile(r"^\s*(```|~~~)")
+_DOLLAR_PAIR_RE = re.compile(r"\$\$(.+?)\$\$")
+_TRAILING_PAIR_RE = re.compile(r"^((?:(?!\$\$).)*\S)\s*\$\$(.+?)\$\$\s*$")
+_LIST_ITEM_RE = re.compile(r"^\s*([-*+]|\d+[.)])\s")
+
+
+def normalize_display_math(md_text: str) -> str:
+    """
+    فرمول‌های $$...$$ را به بلوک استاندارد تبدیل می‌کند (خط خالی قبل و بعد).
+    اگر $$ چسبیده به خطوط دیگر باشد، پایتون-مارک‌داون آن را درون‌خطی می‌بیند و
+    یک $ اضافه دور فرمول باقی می‌ماند.
+      • $$...$$ تک‌خطی و مستقل  → بلوک
+      • $$...$$ وسط متن یا داخل جدول → $\\displaystyle ...$ (درون‌خطی)
+      • $$ $...$ $$ (دلار تو در تو) → دلارهای داخلی حذف می‌شود
+    محتوای code block ها دست‌نخورده می‌ماند.
+    """
+    lines = md_text.split("\n")
+    out = []
+    in_fence = False
+    in_math = False
+    buf = []
+    indent = ""
+
+    def clean_inner(text):
+        text = text.strip()
+        if len(text) > 1 and text.startswith("$") and text.endswith("$"):
+            text = text.strip("$").strip()
+        return text
+
+    def emit_block(content, ind):
+        content = clean_inner(content)
+        if not content:
+            return
+        if out and out[-1].strip():
+            out.append("")
+        out.append(f"{ind}$$")
+        out.extend(f"{ind}{ln}" for ln in content.split("\n"))
+        out.append(f"{ind}$$")
+        out.append("")
+
+    def inline_repl(m):
+        inner = clean_inner(m.group(1))
+        return f"$\\displaystyle {inner}$" if inner else ""
+
+    for line in lines:
+        if in_math:
+            if "$$" in line:
+                before, _, after = line.partition("$$")
+                buf.append(before)
+                emit_block("\n".join(buf), indent)
+                in_math, buf = False, []
+                if after.strip():
+                    out.append(after)
+            else:
+                buf.append(line)
+            continue
+
+        if _FENCE_RE.match(line):
+            in_fence = not in_fence
+            out.append(line)
+            continue
+        if in_fence or "$$" not in line:
+            out.append(line)
+            continue
+
+        stripped = line.strip()
+        if stripped.startswith("|"):  # ردیف جدول
+            out.append(_DOLLAR_PAIR_RE.sub(inline_repl, line))
+            continue
+
+        whole = _DOLLAR_PAIR_RE.fullmatch(stripped)
+        if whole:
+            emit_block(whole.group(1), line[: len(line) - len(line.lstrip())])
+            continue
+
+        tail = _TRAILING_PAIR_RE.match(line)
+        if tail and not _LIST_ITEM_RE.match(line):
+            out.append(tail.group(1))
+            emit_block(tail.group(2), line[: len(line) - len(line.lstrip())])
+            continue
+
+        replaced = _DOLLAR_PAIR_RE.sub(inline_repl, line)
+        if "$$" not in replaced:
+            out.append(replaced)
+            continue
+
+        # $$ بازشده که در همین خط بسته نشده → بلوک چندخطی
+        before, _, after = line.partition("$$")
+        if before.strip():
+            out.append(before)
+        indent = line[: len(line) - len(line.lstrip())]
+        in_math, buf = True, [after]
+
+    if in_math:  # بلوک بسته‌نشده؛ بدون تغییر برگردان
+        out.append("$$")
+        out.extend(buf)
+    return "\n".join(out)
+
+
+_ESC_DISPLAY_RE = re.compile(r"\\\$\\\$(.+?)\\\$\\\$")
+_ESC_INLINE_RE = re.compile(r"\\\$(?!\s)((?:(?!\\\$).)+?)(?<!\s)\\\$")
+_MD_UNESCAPE_RE = re.compile(r"\\([\\`*_{}\[\]()#+\-.!$=|<>~&:])")
+
+
+def unescape_escaped_math(md_text: str) -> str:
+    r"""
+    بعضی ابزارها هنگام ذخیرهٔ .md همهٔ کاراکترهای خاص را escape می‌کنند:
+        \$\$INR \= \\left(\\frac{a}{b}\\right)\$\$   ← فرمول با \$ شروع و تمام می‌شود
+    در این حالت MathJax هیچ فرمولی نمی‌بیند. این تابع فقط فرمول‌هایی را که
+    با \$ محصور شده‌اند به شکل عادی برمی‌گرداند ($...$ و $$...$$) و داخل آن‌ها
+    escape ها را برمی‌دارد (\\ ← \ ،‏ \_ ← _ ،‏ \= ← =). code block ها دست‌نخورده می‌مانند.
+    """
+    if "\\$" not in md_text:
+        return md_text
+
+    def unesc(text):
+        return _MD_UNESCAPE_RE.sub(r"\1", text)
+
+    out = []
+    in_fence = False
+    for line in md_text.split("\n"):
+        if _FENCE_RE.match(line):
+            in_fence = not in_fence
+            out.append(line)
+            continue
+        if in_fence or "\\$" not in line:
+            out.append(line)
+            continue
+        line = _ESC_DISPLAY_RE.sub(lambda m: "$$" + unesc(m.group(1)) + "$$", line)
+        line = _ESC_INLINE_RE.sub(lambda m: "$" + unesc(m.group(1)) + "$", line)
+        out.append(line)
+    return "\n".join(out)
 
 
 CALLOUT_LABELS = {
@@ -646,7 +880,7 @@ ALLOWED_URL_SCHEMES = {"http", "https", "mailto", "data"}
 DIR_AUTO_RE = re.compile(r"<(p|h[1-6]|ul|ol|li|table|blockquote|dl)(?=[\s>])")
 
 
-def build_html(md_text, orientation="portrait", compact=False, columns=1):
+def build_html(md_text, orientation="portrait", compact=False, columns=1, font_size="normal", print_mode=False):
     """Markdown → HTML کامل. خروجی: (html, has_math, has_mermaid)"""
     # نمودارهای mermaid قبل از هر پردازش دیگری جدا می‌شوند و بعد از پاک‌سازی HTML برمی‌گردند
     token = "MMD" + secrets.token_hex(8) + "X"
@@ -657,6 +891,8 @@ def build_html(md_text, orientation="portrait", compact=False, columns=1):
         return f"\n\n{token}{len(mermaid_blocks) - 1}END\n\n"
 
     md_text = MERMAID_FENCE_RE.sub(stash_mermaid, md_text)
+    md_text = unescape_escaped_math(md_text)
+    md_text = normalize_display_math(md_text)
     md_text = auto_repair_latex(md_text)
 
     body = markdown.markdown(
@@ -702,10 +938,17 @@ def build_html(md_text, orientation="portrait", compact=False, columns=1):
         classes.append("landscape-mode")
     if columns == 2:
         classes.append("columns-2")
+    if font_size in ("small", "large"):
+        classes.append(f"font-{font_size}")
+    if print_mode:
+        classes.append("print-mode")
 
     scripts = ""
     if has_math:
-        scripts += MATHJAX_SCRIPT
+        chem = "\\ce{" in body or "\\pu{" in body
+        scripts += MATHJAX_SCRIPT.replace(
+            "{{CHEM_LOAD}}", "'[tex]/mhchem'" if chem else ""
+        ).replace("{{CHEM_PKG}}", "'mhchem'" if chem else "")
     if mermaid_blocks:
         scripts += MERMAID_SCRIPT
 
@@ -717,6 +960,12 @@ def build_html(md_text, orientation="portrait", compact=False, columns=1):
         .replace("{{CONTENT}}", body)
     )
     return full_html, has_math, bool(mermaid_blocks)
+
+
+def error_detail(exc) -> str:
+    if not DEBUG_ERRORS:
+        return ""
+    return f"\n\nجزئیات: {type(exc).__name__}: {str(exc)[:300]}"
 
 
 def clean_filename(text):
@@ -817,9 +1066,19 @@ def make_router(full_html: str):
     return router
 
 
-async def generate_pdf_output(md_text, output_pdf_path, orientation="portrait", compact=False, columns=1):
+async def generate_pdf_output(
+    md_text,
+    output_pdf_path,
+    orientation="portrait",
+    compact=False,
+    columns=1,
+    page_format=None,
+    font_size="normal",
+    print_mode=False,
+    title="",
+):
     full_html, has_math, has_mermaid = await asyncio.to_thread(
-        build_html, md_text, orientation, compact, columns
+        build_html, md_text, orientation, compact, columns, font_size, print_mode
     )
 
     browser = await ensure_browser()
@@ -830,16 +1089,22 @@ async def generate_pdf_output(md_text, output_pdf_path, orientation="portrait", 
         page.set_default_timeout(RENDER_TIMEOUT_MS)
         await page.goto(DOC_URL, wait_until="load")
         await page.evaluate(RENDER_JS, {"math": has_math, "useMermaid": has_mermaid})
+        stats = await page.evaluate(RENDER_STATS_JS)
+        logger.info("render stats: %s (version %s)", stats, BOT_VERSION)
+        if has_math and stats.get("arith", 0) > 0 and stats.get("mjx", 0) == 0:
+            raise RuntimeError("MathJax did not render any formula")
 
         page_margin = "12mm" if compact else "20mm"
         await page.pdf(
             path=output_pdf_path,
-            format=PDF_PAGE_FORMAT,
+            format=page_format or PDF_PAGE_FORMAT,
             landscape=(orientation == "landscape"),
             print_background=True,
             display_header_footer=True,
             header_template="<div></div>",
-            footer_template=FOOTER_HTML,
+            footer_template=build_footer(title, page_margin),
+            outline=True,
+            tagged=True,
             margin={
                 "top": page_margin,
                 "bottom": page_margin,
@@ -851,11 +1116,12 @@ async def generate_pdf_output(md_text, output_pdf_path, orientation="portrait", 
         with contextlib.suppress(Exception):
             await context.close()
         gc.collect()
+    return stats
 
 
 async def run_conversion(md_text, pdf_path, settings):
     async with conversion_semaphore:
-        await asyncio.wait_for(
+        return await asyncio.wait_for(
             generate_pdf_output(md_text, pdf_path, **settings),
             timeout=CONVERSION_TIMEOUT,
         )
@@ -918,6 +1184,17 @@ def get_settings_keyboard(chat_id):
     orient_btn = "📑 جهت: افقی" if orientation == "landscape" else "📄 جهت: عمودی"
     compact_btn = "📦 حالت: فشرده" if compact else "📖 حالت: عادی"
     col_btn = "📰 ستون: دو ستونی" if columns == 2 else "📃 ستون: تک ستونی"
+    page_format = get_user_setting(chat_id, "page_format", PDF_PAGE_FORMAT)
+    font_size = get_user_setting(chat_id, "font_size", "normal")
+    print_mode = get_user_setting(chat_id, "print_mode", False)
+
+    page_btn = f"📏 اندازه: {page_format}"
+    font_btn = {
+        "small": "🔡 فونت: کوچک",
+        "normal": "🔤 فونت: معمولی",
+        "large": "🔠 فونت: بزرگ",
+    }.get(font_size, "🔤 فونت: معمولی")
+    print_btn = "🖨 چاپ: کم‌مصرف" if print_mode else "🎨 چاپ: رنگی"
 
     keyboard = [
         [
@@ -925,6 +1202,11 @@ def get_settings_keyboard(chat_id):
             InlineKeyboardButton(compact_btn, callback_data="toggle_compact"),
         ],
         [InlineKeyboardButton(col_btn, callback_data="toggle_cols")],
+        [
+            InlineKeyboardButton(page_btn, callback_data="toggle_page"),
+            InlineKeyboardButton(font_btn, callback_data="cycle_font"),
+        ],
+        [InlineKeyboardButton(print_btn, callback_data="toggle_print")],
     ]
     return InlineKeyboardMarkup(keyboard)
 
@@ -933,7 +1215,8 @@ MENU_TEXT = (
     "سلام! 👋\n\n"
     "📄 فایل .md/.txt، متن دلخواه و یا فایل فشرده .zip خود را بفرستید.\n"
     "💡 نکته: نام فایل خروجی PDF دقیقا مطابق با نام فایل اصلی شما تنظیم می‌شود.\n\n"
-    "⚙️ تنظیمات خروجی خود را از طریق دکمه‌های زیر مدیریت کنید:"
+    "⚙️ تنظیمات خروجی خود را از طریق دکمه‌های زیر مدیریت کنید:\n\n"
+    f"🔖 نسخه: {BOT_VERSION}"
 )
 
 
@@ -972,6 +1255,16 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif data == "toggle_cols":
         current = get_user_setting(chat_id, "columns", 1)
         set_user_setting(chat_id, "columns", 2 if current == 1 else 1)
+    elif data == "toggle_page":
+        current = get_user_setting(chat_id, "page_format", PDF_PAGE_FORMAT)
+        set_user_setting(chat_id, "page_format", "Letter" if current == "A4" else "A4")
+    elif data == "cycle_font":
+        current = get_user_setting(chat_id, "font_size", "normal")
+        index = FONT_SIZES.index(current) if current in FONT_SIZES else 1
+        set_user_setting(chat_id, "font_size", FONT_SIZES[(index + 1) % len(FONT_SIZES)])
+    elif data == "toggle_print":
+        current = get_user_setting(chat_id, "print_mode", False)
+        set_user_setting(chat_id, "print_mode", not current)
 
     await show_menu(update)
 
@@ -979,23 +1272,33 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def process_conversion(update: Update, context: ContextTypes.DEFAULT_TYPE, md_text: str, file_default_name=None):
     message = update.message
     chat_id = update.effective_chat.id
-    settings = get_conversion_settings(chat_id)
     file_title = clean_filename(file_default_name) or f"Note_{message.message_id}"
+    settings = {**get_conversion_settings(chat_id), "title": file_title}
 
     status_msg = await message.reply_text(f"⏳ در حال تبدیل {file_title}.pdf ...")
 
     with tempfile.TemporaryDirectory(prefix="md2pdf_") as tmpdir:
         pdf_path = os.path.join(tmpdir, "out.pdf")
         try:
-            await run_conversion(md_text, pdf_path, settings)
+            stats = await run_conversion(md_text, pdf_path, settings)
             await send_pdf(message, pdf_path, f"{file_title}.pdf")
             await safe_delete(status_msg)
+            warning = render_warnings(stats)
+            if warning:
+                try:
+                    await message.reply_text(warning)
+                except Exception:
+                    logger.debug("warning message failed", exc_info=True)
         except asyncio.TimeoutError:
             logger.warning("Conversion timed out for %s", file_title)
             await safe_edit(status_msg, f"❌ تبدیل {file_title} بیش از حد طول کشید و لغو شد.")
-        except Exception:
+        except Exception as exc:
             logger.exception("Conversion failed for %s", file_title)
-            await safe_edit(status_msg, f"❌ خطا در تبدیل {file_title}. لطفاً محتوای فایل را بررسی و دوباره تلاش کنید.")
+            await safe_edit(
+                status_msg,
+                f"❌ خطا در تبدیل {file_title}. لطفاً محتوای فایل را بررسی و دوباره تلاش کنید."
+                + error_detail(exc),
+            )
 
 
 def read_zip_documents(zip_path):
@@ -1060,31 +1363,37 @@ async def handle_zip(update: Update, context: ContextTypes.DEFAULT_TYPE, zip_pat
         return
 
     failed = []
+    warnings = []
     for idx, (title, text) in enumerate(docs, 1):
         await safe_edit(status_msg, f"⏳ ({idx}/{len(docs)}) در حال تبدیل {title}.pdf ...")
         pdf_path = os.path.join(tmpdir, f"zip_{idx}.pdf")
         try:
-            await run_conversion(text, pdf_path, settings)
+            stats = await run_conversion(text, pdf_path, {**settings, "title": title})
             await send_pdf(message, pdf_path, f"{title}.pdf")
+            warning = render_warnings(stats, title)
+            if warning:
+                warnings.append(warning)
         except asyncio.TimeoutError:
             logger.warning("Conversion timed out for %s", title)
             failed.append(f"{title} (زمان تبدیل تمام شد)")
-        except Exception:
+        except Exception as exc:
             logger.exception("Conversion failed for %s", title)
-            failed.append(title)
+            failed.append(title + error_detail(exc))
         finally:
             with contextlib.suppress(OSError):
                 os.remove(pdf_path)
 
     await safe_delete(status_msg)
 
-    if failed or skipped:
+    if failed or skipped or warnings:
         lines = []
+        if warnings:
+            lines.append("\n\n".join(warnings[:5]))
         if failed:
             lines.append("❌ تبدیل این فایل‌ها ناموفق بود:\n" + "\n".join(f"• {n}" for n in failed[:10]))
         if skipped:
             lines.append("⚠️ این فایل‌ها نادیده گرفته شدند:\n" + "\n".join(f"• {n}" for n in skipped[:10]))
-        await message.reply_text("\n\n".join(lines))
+        await message.reply_text("\n\n".join(lines)[:4000])
 
 
 async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1162,6 +1471,36 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await process_conversion(update, context, text)
 
 
+SELFTEST_MD = r"""فرمول محاسبه: $$INR = \left(\frac{\text{PT}_{\text{Patient}}}{\text{MNPT}}\right)^{ISI}$$
+
+- $\text{MNPT}$: آزمون
+- $ISI$: آزمون
+"""
+
+
+async def selftest(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """رندر یک نمونهٔ ثابت و گزارش وضعیت؛ برای عیب‌یابی."""
+    if not update.message or not await check_access(update):
+        return
+    checks = {
+        "mathjax": (ASSETS_DIR / "mathjax" / "tex-chtml.js").is_file(),
+        "mermaid": (ASSETS_DIR / "mermaid" / "mermaid.min.js").is_file(),
+        "font": (ASSETS_DIR / "fonts" / "Vazirmatn-Variable.woff2").is_file(),
+    }
+    status = await update.message.reply_text("🧪 در حال آزمایش ...")
+    with tempfile.TemporaryDirectory(prefix="md2pdf_self_") as tmpdir:
+        pdf_path = os.path.join(tmpdir, "selftest.pdf")
+        try:
+            stats = await run_conversion(SELFTEST_MD, pdf_path, get_conversion_settings(update.effective_chat.id))
+            report = f"✅ نسخه {BOT_VERSION}\nفایل‌ها: {checks}\nآمار رندر: {stats}"
+            await send_pdf(update.message, pdf_path, "selftest.pdf")
+        except Exception as exc:
+            logger.exception("Selftest failed")
+            report = f"❌ نسخه {BOT_VERSION}\nفایل‌ها: {checks}\nخطا: {type(exc).__name__}: {str(exc)[:400]}"
+    await safe_delete(status)
+    await update.message.reply_text(report)
+
+
 async def error_handler(update, context: ContextTypes.DEFAULT_TYPE):
     logger.error("Unhandled error while processing an update", exc_info=context.error)
 
@@ -1190,7 +1529,7 @@ def main():
     threading.Thread(target=run_dummy_server, daemon=True).start()
     ensure_assets()
 
-    logger.info("Starting Telegram Bot...")
+    logger.info("Starting Telegram Bot... version=%s", BOT_VERSION)
     app = (
         Application.builder()
         .token(token)
@@ -1201,6 +1540,7 @@ def main():
     )
 
     app.add_handler(CommandHandler(["start", "help", "settings"], start))
+    app.add_handler(CommandHandler("selftest", selftest))
     app.add_handler(CallbackQueryHandler(button_callback))
     app.add_handler(MessageHandler(filters.Document.ALL, handle_document))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
