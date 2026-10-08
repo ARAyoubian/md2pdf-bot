@@ -53,7 +53,7 @@ from telegram.ext import (
     filters,
 )
 
-BOT_VERSION = "r8-diagnostics"
+BOT_VERSION = "r9-unescape-math"
 
 logging.basicConfig(
     format="%(asctime)s %(levelname)s %(name)s: %(message)s", level=logging.INFO
@@ -688,6 +688,41 @@ def normalize_display_math(md_text: str) -> str:
     return "\n".join(out)
 
 
+_ESC_DISPLAY_RE = re.compile(r"\\\$\\\$(.+?)\\\$\\\$")
+_ESC_INLINE_RE = re.compile(r"\\\$(?!\s)((?:(?!\\\$).)+?)(?<!\s)\\\$")
+_MD_UNESCAPE_RE = re.compile(r"\\([\\`*_{}\[\]()#+\-.!$=|<>~&:])")
+
+
+def unescape_escaped_math(md_text: str) -> str:
+    r"""
+    بعضی ابزارها هنگام ذخیرهٔ .md همهٔ کاراکترهای خاص را escape می‌کنند:
+        \$\$INR \= \\left(\\frac{a}{b}\\right)\$\$   ← فرمول با \$ شروع و تمام می‌شود
+    در این حالت MathJax هیچ فرمولی نمی‌بیند. این تابع فقط فرمول‌هایی را که
+    با \$ محصور شده‌اند به شکل عادی برمی‌گرداند ($...$ و $$...$$) و داخل آن‌ها
+    escape ها را برمی‌دارد (\\ ← \ ،‏ \_ ← _ ،‏ \= ← =). code block ها دست‌نخورده می‌مانند.
+    """
+    if "\\$" not in md_text:
+        return md_text
+
+    def unesc(text):
+        return _MD_UNESCAPE_RE.sub(r"\1", text)
+
+    out = []
+    in_fence = False
+    for line in md_text.split("\n"):
+        if _FENCE_RE.match(line):
+            in_fence = not in_fence
+            out.append(line)
+            continue
+        if in_fence or "\\$" not in line:
+            out.append(line)
+            continue
+        line = _ESC_DISPLAY_RE.sub(lambda m: "$$" + unesc(m.group(1)) + "$$", line)
+        line = _ESC_INLINE_RE.sub(lambda m: "$" + unesc(m.group(1)) + "$", line)
+        out.append(line)
+    return "\n".join(out)
+
+
 CALLOUT_LABELS = {
     "NOTE": ("note", "📌 نکته:"),
     "WARNING": ("warning", "⚠️ هشدار:"),
@@ -783,6 +818,7 @@ def build_html(md_text, orientation="portrait", compact=False, columns=1):
         return f"\n\n{token}{len(mermaid_blocks) - 1}END\n\n"
 
     md_text = MERMAID_FENCE_RE.sub(stash_mermaid, md_text)
+    md_text = unescape_escaped_math(md_text)
     md_text = normalize_display_math(md_text)
     md_text = auto_repair_latex(md_text)
 
