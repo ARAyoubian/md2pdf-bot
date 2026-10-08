@@ -53,7 +53,7 @@ from telegram.ext import (
     filters,
 )
 
-BOT_VERSION = "r7-mathjax-wait-fix"
+BOT_VERSION = "r8-diagnostics"
 
 logging.basicConfig(
     format="%(asctime)s %(levelname)s %(name)s: %(message)s", level=logging.INFO
@@ -540,9 +540,18 @@ async ({ math, useMermaid }) => {
 }
 """
 
+RENDER_STATS_JS = r"""
+() => ({
+    arith: document.querySelectorAll('.arithmatex').length,
+    mjx: document.querySelectorAll('mjx-container').length,
+    mermaid: document.querySelectorAll('.mermaid-diagram').length,
+    dollars: (document.body.innerText.match(/\$/g) || []).length,
+})
+"""
+
 FOOTER_HTML = """
 <div style="font-family: 'DejaVu Sans', Arial, sans-serif; font-size: 10px; width: 100%; text-align: center; color: #8c959f; padding-bottom: 5px;">
-    Page <span class="pageNumber"></span> of <span class="totalPages"></span>
+    Page <span class="pageNumber"></span> of <span class="totalPages"></span> &middot; {{VERSION}}
 </div>
 """
 
@@ -957,6 +966,10 @@ async def generate_pdf_output(md_text, output_pdf_path, orientation="portrait", 
         page.set_default_timeout(RENDER_TIMEOUT_MS)
         await page.goto(DOC_URL, wait_until="load")
         await page.evaluate(RENDER_JS, {"math": has_math, "useMermaid": has_mermaid})
+        stats = await page.evaluate(RENDER_STATS_JS)
+        logger.info("render stats: %s (version %s)", stats, BOT_VERSION)
+        if has_math and stats.get("arith", 0) > 0 and stats.get("mjx", 0) == 0:
+            raise RuntimeError("MathJax did not render any formula")
 
         page_margin = "12mm" if compact else "20mm"
         await page.pdf(
@@ -966,7 +979,7 @@ async def generate_pdf_output(md_text, output_pdf_path, orientation="portrait", 
             print_background=True,
             display_header_footer=True,
             header_template="<div></div>",
-            footer_template=FOOTER_HTML,
+            footer_template=FOOTER_HTML.replace("{{VERSION}}", BOT_VERSION),
             margin={
                 "top": page_margin,
                 "bottom": page_margin,
@@ -978,11 +991,12 @@ async def generate_pdf_output(md_text, output_pdf_path, orientation="portrait", 
         with contextlib.suppress(Exception):
             await context.close()
         gc.collect()
+    return stats
 
 
 async def run_conversion(md_text, pdf_path, settings):
     async with conversion_semaphore:
-        await asyncio.wait_for(
+        return await asyncio.wait_for(
             generate_pdf_output(md_text, pdf_path, **settings),
             timeout=CONVERSION_TIMEOUT,
         )
@@ -1294,6 +1308,36 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await process_conversion(update, context, text)
 
 
+SELFTEST_MD = r"""فرمول محاسبه: $$INR = \left(\frac{\text{PT}_{\text{Patient}}}{\text{MNPT}}\right)^{ISI}$$
+
+- $\text{MNPT}$: آزمون
+- $ISI$: آزمون
+"""
+
+
+async def selftest(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """رندر یک نمونهٔ ثابت و گزارش وضعیت؛ برای عیب‌یابی."""
+    if not update.message or not await check_access(update):
+        return
+    checks = {
+        "mathjax": (ASSETS_DIR / "mathjax" / "tex-chtml.js").is_file(),
+        "mermaid": (ASSETS_DIR / "mermaid" / "mermaid.min.js").is_file(),
+        "font": (ASSETS_DIR / "fonts" / "Vazirmatn-Variable.woff2").is_file(),
+    }
+    status = await update.message.reply_text("🧪 در حال آزمایش ...")
+    with tempfile.TemporaryDirectory(prefix="md2pdf_self_") as tmpdir:
+        pdf_path = os.path.join(tmpdir, "selftest.pdf")
+        try:
+            stats = await run_conversion(SELFTEST_MD, pdf_path, get_conversion_settings(update.effective_chat.id))
+            report = f"✅ نسخه {BOT_VERSION}\nفایل‌ها: {checks}\nآمار رندر: {stats}"
+            await send_pdf(update.message, pdf_path, "selftest.pdf")
+        except Exception as exc:
+            logger.exception("Selftest failed")
+            report = f"❌ نسخه {BOT_VERSION}\nفایل‌ها: {checks}\nخطا: {type(exc).__name__}: {str(exc)[:400]}"
+    await safe_delete(status)
+    await update.message.reply_text(report)
+
+
 async def error_handler(update, context: ContextTypes.DEFAULT_TYPE):
     logger.error("Unhandled error while processing an update", exc_info=context.error)
 
@@ -1333,6 +1377,7 @@ def main():
     )
 
     app.add_handler(CommandHandler(["start", "help", "settings"], start))
+    app.add_handler(CommandHandler("selftest", selftest))
     app.add_handler(CallbackQueryHandler(button_callback))
     app.add_handler(MessageHandler(filters.Document.ALL, handle_document))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
