@@ -53,6 +53,8 @@ from telegram.ext import (
     filters,
 )
 
+BOT_VERSION = "r6-local-mathjax-justify"
+
 logging.basicConfig(
     format="%(asctime)s %(levelname)s %(name)s: %(message)s", level=logging.INFO
 )
@@ -519,8 +521,8 @@ async ({ math, useMermaid }) => {
     }
 
     if (math) {
-        if (!window.MathJax || !MathJax.startup) {
-            throw new Error('MathJax not loaded');
+        if (!window.MathJax || typeof MathJax.typesetPromise !== 'function') {
+            throw new Error('MathJax failed to load');
         }
         await MathJax.startup.promise;
         await MathJax.typesetPromise();
@@ -1041,7 +1043,8 @@ MENU_TEXT = (
     "سلام! 👋\n\n"
     "📄 فایل .md/.txt، متن دلخواه و یا فایل فشرده .zip خود را بفرستید.\n"
     "💡 نکته: نام فایل خروجی PDF دقیقا مطابق با نام فایل اصلی شما تنظیم می‌شود.\n\n"
-    "⚙️ تنظیمات خروجی خود را از طریق دکمه‌های زیر مدیریت کنید:"
+    "⚙️ تنظیمات خروجی خود را از طریق دکمه‌های زیر مدیریت کنید:\n\n"
+    f"🔖 نسخه: {BOT_VERSION}"
 )
 
 
@@ -1298,7 +1301,7 @@ def main():
     threading.Thread(target=run_dummy_server, daemon=True).start()
     ensure_assets()
 
-    logger.info("Starting Telegram Bot...")
+    logger.info("Starting Telegram Bot... version=%s", BOT_VERSION)
     app = (
         Application.builder()
         .token(token)
