@@ -53,7 +53,7 @@ from telegram.ext import (
     filters,
 )
 
-BOT_VERSION = "r6-local-mathjax-justify"
+BOT_VERSION = "r7-mathjax-wait-fix"
 
 logging.basicConfig(
     format="%(asctime)s %(levelname)s %(name)s: %(message)s", level=logging.INFO
@@ -86,6 +86,7 @@ JS_HEAP_MB = _env_int("JS_HEAP_MB", 192)
 TELEGRAM_UPLOAD_LIMIT = 49 * 1024 * 1024
 PDF_PAGE_FORMAT = os.environ.get("PDF_PAGE_FORMAT", "Letter")
 ALLOW_REMOTE_IMAGES = os.environ.get("ALLOW_REMOTE_IMAGES", "0") == "1"
+DEBUG_ERRORS = os.environ.get("DEBUG_ERRORS", "0") == "1"
 
 ALLOWED_USER_IDS = {
     int(x)
@@ -465,11 +466,11 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
 MATHJAX_SCRIPT = r"""
     <script>
         window.MathJax = {
-            loader: { load: ['[tex]/mhchem'] },
+            loader: { load: [{{CHEM_LOAD}}] },
             tex: {
                 inlineMath: [['\\(', '\\)']],
                 displayMath: [['\\[', '\\]']],
-                packages: { '[+]': ['mhchem'] },
+                packages: { '[+]': [{{CHEM_PKG}}] },
                 processEscapes: true,
                 processEnvironments: true
             },
@@ -521,11 +522,18 @@ async ({ math, useMermaid }) => {
     }
 
     if (math) {
-        if (!window.MathJax || typeof MathJax.typesetPromise !== 'function') {
-            throw new Error('MathJax failed to load');
+        const t0 = Date.now();
+        while (!(window.MathJax && window.MathJax.startup && window.MathJax.startup.promise)) {
+            if (Date.now() - t0 > 20000) {
+                throw new Error('MathJax script did not load');
+            }
+            await new Promise((r) => setTimeout(r, 50));
         }
-        await MathJax.startup.promise;
-        await MathJax.typesetPromise();
+        await window.MathJax.startup.promise;
+        if (typeof window.MathJax.typesetPromise !== 'function') {
+            throw new Error('MathJax started without typesetPromise');
+        }
+        await window.MathJax.typesetPromise();
     }
 
     await document.fonts.ready;
@@ -815,7 +823,10 @@ def build_html(md_text, orientation="portrait", compact=False, columns=1):
 
     scripts = ""
     if has_math:
-        scripts += MATHJAX_SCRIPT
+        chem = "\\ce{" in body or "\\pu{" in body
+        scripts += MATHJAX_SCRIPT.replace(
+            "{{CHEM_LOAD}}", "'[tex]/mhchem'" if chem else ""
+        ).replace("{{CHEM_PKG}}", "'mhchem'" if chem else "")
     if mermaid_blocks:
         scripts += MERMAID_SCRIPT
 
@@ -827,6 +838,12 @@ def build_html(md_text, orientation="portrait", compact=False, columns=1):
         .replace("{{CONTENT}}", body)
     )
     return full_html, has_math, bool(mermaid_blocks)
+
+
+def error_detail(exc) -> str:
+    if not DEBUG_ERRORS:
+        return ""
+    return f"\n\nجزئیات: {type(exc).__name__}: {str(exc)[:300]}"
 
 
 def clean_filename(text):
@@ -1104,9 +1121,13 @@ async def process_conversion(update: Update, context: ContextTypes.DEFAULT_TYPE,
         except asyncio.TimeoutError:
             logger.warning("Conversion timed out for %s", file_title)
             await safe_edit(status_msg, f"❌ تبدیل {file_title} بیش از حد طول کشید و لغو شد.")
-        except Exception:
+        except Exception as exc:
             logger.exception("Conversion failed for %s", file_title)
-            await safe_edit(status_msg, f"❌ خطا در تبدیل {file_title}. لطفاً محتوای فایل را بررسی و دوباره تلاش کنید.")
+            await safe_edit(
+                status_msg,
+                f"❌ خطا در تبدیل {file_title}. لطفاً محتوای فایل را بررسی و دوباره تلاش کنید."
+                + error_detail(exc),
+            )
 
 
 def read_zip_documents(zip_path):
@@ -1180,9 +1201,9 @@ async def handle_zip(update: Update, context: ContextTypes.DEFAULT_TYPE, zip_pat
         except asyncio.TimeoutError:
             logger.warning("Conversion timed out for %s", title)
             failed.append(f"{title} (زمان تبدیل تمام شد)")
-        except Exception:
+        except Exception as exc:
             logger.exception("Conversion failed for %s", title)
-            failed.append(title)
+            failed.append(title + error_detail(exc))
         finally:
             with contextlib.suppress(OSError):
                 os.remove(pdf_path)
