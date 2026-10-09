@@ -21,6 +21,7 @@
 import asyncio
 import contextlib
 import gc
+from datetime import datetime, timedelta, timezone
 import html
 import importlib.util
 import io
@@ -54,7 +55,7 @@ from telegram.ext import (
     filters,
 )
 
-BOT_VERSION = "r13-templates"
+BOT_VERSION = "r14-front-matter"
 
 logging.basicConfig(
     format="%(asctime)s %(levelname)s %(name)s: %(message)s", level=logging.INFO
@@ -244,6 +245,8 @@ def get_conversion_settings(chat_id):
         "print_mode": get_user_setting(chat_id, "print_mode", False),
         "template": get_user_setting(chat_id, "template", "classic"),
         "accent": get_user_setting(chat_id, "accent", "blue"),
+        "front": get_user_setting(chat_id, "front", True),
+        "paper": get_user_setting(chat_id, "paper", True),
     }
 
 
@@ -544,6 +547,72 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
         body.tpl-minimal tr:nth-child(even) { background: transparent; }
         body.tpl-minimal pre, body.tpl-minimal .codehilite { border: none; }
 
+        /* ───── پس‌زمینهٔ کاغذی ───── */
+        body:not(.print-mode) { background-color: #fbf8f1; }
+        body.paper-off, body.print-mode { background-color: #ffffff; }
+
+        /* ───── نشان عنوان‌دار callout ───── */
+        blockquote[class*="callout-"] > p:first-child > strong:first-child {
+            display: inline-block;
+            color: #ffffff;
+            padding: 1px 10px;
+            border-radius: 999px;
+            font-size: 0.9em;
+            margin-inline-end: 6px;
+        }
+        blockquote.callout-note > p:first-child > strong:first-child { background: var(--note-border); }
+        blockquote.callout-warning > p:first-child > strong:first-child { background: var(--warning-border); }
+        blockquote.callout-tip > p:first-child > strong:first-child { background: var(--tip-border); }
+        blockquote.callout-important > p:first-child > strong:first-child { background: var(--important-border); }
+
+        /* ───── کادر خلاصهٔ فصل ───── */
+        .chapter-summary {
+            border: 1.5px solid var(--accent-color);
+            border-radius: 10px;
+            padding: 4px 16px 10px;
+            margin: 18px 0;
+        }
+        .chapter-summary > h2, .chapter-summary > h3 {
+            border-bottom: none;
+            color: var(--accent-color);
+            margin-top: 10px;
+        }
+        body.print-mode .chapter-summary { background: none; }
+
+        /* ───── جلد ───── */
+        .cover {
+            min-height: 225mm;
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+            align-items: center;
+            text-align: center;
+            break-after: page;
+            page-break-after: always;
+        }
+        .cover-kicker { font-size: 13px; letter-spacing: 2px; color: var(--accent-color); margin-bottom: 18px; }
+        .cover-title { font-size: 34px; font-weight: 700; line-height: 1.5; margin-bottom: 18px; }
+        .cover-line { width: 80px; height: 3px; background: var(--accent-color); margin: 0 auto 18px; }
+        .cover-meta { font-size: 13px; color: var(--text-muted); }
+
+        /* ───── فهرست مطالب ───── */
+        .toc { break-after: page; page-break-after: always; }
+        .toc-title {
+            font-size: 22px;
+            font-weight: 700;
+            color: var(--accent-color);
+            border-bottom: 2px solid var(--border-color);
+            padding-bottom: 8px;
+            margin-bottom: 18px;
+        }
+        .toc-row { display: flex; align-items: baseline; gap: 6px; margin: 6px 0; font-size: 14px; }
+        .toc-row a { color: var(--text-main); text-decoration: none; }
+        .toc-row.toc-l1 { font-weight: 700; margin-top: 12px; }
+        .toc-row.toc-l2 { padding-inline-start: 18px; }
+        .toc-row.toc-l3 { padding-inline-start: 36px; font-size: 13px; color: var(--text-muted); }
+        .toc-dots { flex: 1; border-bottom: 1px dotted #aeb4bb; transform: translateY(-3px); }
+        .toc-num { min-width: 28px; text-align: start; }
+
         /* PYGMENTS_INJECTION */
     </style>
     {{SCRIPTS}}
@@ -693,6 +762,7 @@ html, body { margin: 0; padding: 0; }
     font-size: 8.5pt;
     color: #8c959f;
 }
+.hd { position: absolute; top: 9mm; left: {{PAD}}; right: {{PAD}}; text-align: center; font-family: 'Vazirmatn', 'Noto Sans Arabic', sans-serif; font-size: 8pt; color: #8c959f; border-bottom: 0.4pt solid #d0d7de; padding-bottom: 2mm; }
 .ttl { max-width: 70%; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
 </style></head><body>{{PAGES}}</body></html>
 """
@@ -702,19 +772,29 @@ def to_persian_digits(value) -> str:
     return str(value).translate(_PERSIAN_DIGITS)
 
 
-def build_footer_overlay(total: int, title: str, pad: str, width_mm: float, height_mm: float) -> str:
-    """یک صفحهٔ HTML با یک بلوک فوتر برای هر صفحهٔ PDF (فونت و اعداد فارسی)."""
+def build_footer_overlay(total, title, pad, width_mm, height_mm, meta=None):
+    """یک صفحهٔ HTML: برای هر صفحهٔ PDF یک بلوک با هدر (در صورت نیاز) و فوتر (در صورت نیاز)."""
     safe_title = html.escape(title or "")
-    pages = "".join(
-        f'<div class="pg"><div class="ft"><span class="ttl" dir="auto">{safe_title}</span>'
-        f"<span>صفحه {to_persian_digits(i)} از {to_persian_digits(total)}</span></div></div>"
-        for i in range(1, total + 1)
-    )
+    if meta is None:
+        meta = [(True, "")] * total
+    parts = []
+    for i in range(1, total + 1):
+        show_footer, header = meta[i - 1] if i - 1 < len(meta) else (True, "")
+        block = ['<div class="pg">']
+        if header:
+            block.append(f'<div class="hd">{html.escape(header)}</div>')
+        if show_footer:
+            block.append(
+                f'<div class="ft"><span class="ttl" dir="auto">{safe_title}</span>'
+                f"<span>صفحه {to_persian_digits(i)} از {to_persian_digits(total)}</span></div>"
+            )
+        block.append("</div>")
+        parts.append("".join(block))
     return (
         FOOTER_OVERLAY_TEMPLATE.replace("{{W}}", f"{width_mm:.2f}")
         .replace("{{H}}", f"{height_mm - 1:.2f}")
         .replace("{{PAD}}", pad)
-        .replace("{{PAGES}}", pages)
+        .replace("{{PAGES}}", "".join(parts))
     )
 
 
@@ -755,8 +835,8 @@ def stamp_footer(pdf_path: str, overlay_bytes: bytes) -> None:
     os.replace(tmp_path, pdf_path)
 
 
-async def add_footer(context, documents, pdf_path, title, page_format, orientation, pad):
-    """فوتر فارسی؛ اگر هر مرحله خطا بدهد PDF بدون فوتر همان‌طور می‌ماند. وضعیت را برمی‌گرداند."""
+async def add_footer(context, documents, pdf_path, title, page_format, orientation, pad, front_info=None):
+    """فوتر و هدر فارسی؛ اگر هر مرحله خطا بدهد PDF بدون آن‌ها می‌ماند. وضعیت را برمی‌گرداند."""
     try:
         size = PAGE_SIZES_MM.get(page_format)
         if size is None:
@@ -769,7 +849,8 @@ async def add_footer(context, documents, pdf_path, title, page_format, orientati
         total = await asyncio.to_thread(count_pdf_pages, pdf_path)
         if total < 1:
             return "skipped: empty pdf"
-        documents[FOOTER_URL] = build_footer_overlay(total, title, pad, width_mm, height_mm)
+        meta = build_page_meta(total, front_info)
+        documents[FOOTER_URL] = build_footer_overlay(total, title, pad, width_mm, height_mm, meta)
 
         footer_page = await context.new_page()
         footer_page.set_default_timeout(RENDER_TIMEOUT_MS)
@@ -1056,6 +1137,175 @@ ALLOWED_URL_SCHEMES = {"http", "https", "mailto", "data"}
 DIR_AUTO_RE = re.compile(r"<(p|h[1-6]|ul|ol|li|table|blockquote|dl)(?=[\s>])")
 
 
+IRAN_TZ = timezone(timedelta(hours=3, minutes=30))
+PERSIAN_MONTHS = (
+    "فروردین", "اردیبهشت", "خرداد", "تیر", "مرداد", "شهریور",
+    "مهر", "آبان", "آذر", "دی", "بهمن", "اسفند",
+)
+
+
+def gregorian_to_jalali(gy, gm, gd):
+    """تبدیل تاریخ میلادی به شمسی (الگوریتم استاندارد)."""
+    g_days_in_month = [0, 31, 59, 90, 120, 151, 181, 212, 243, 273, 304, 334]
+    gy2 = gy + 1 if gm > 2 else gy
+    days = (
+        355666 + 365 * gy + (gy2 + 3) // 4 - (gy2 + 99) // 100 + (gy2 + 399) // 400
+        + gd + g_days_in_month[gm - 1]
+    )
+    jy = -1595 + 33 * (days // 12053)
+    days %= 12053
+    jy += 4 * (days // 1461)
+    days %= 1461
+    if days > 365:
+        jy += (days - 1) // 365
+        days = (days - 1) % 365
+    if days < 186:
+        jm, jd = 1 + days // 31, 1 + days % 31
+    else:
+        jm, jd = 7 + (days - 186) // 30, 1 + (days - 186) % 30
+    return jy, jm, jd
+
+
+def persian_date_text(now=None):
+    now = now or datetime.now(IRAN_TZ)
+    jy, jm, jd = gregorian_to_jalali(now.year, now.month, now.day)
+    return f"{to_persian_digits(jd)} {PERSIAN_MONTHS[jm - 1]} {to_persian_digits(jy)}"
+
+
+_HEADING_RE = re.compile(r"<h([1-3])\b([^>]*)>(.*?)</h\1>", re.S)
+_ANY_HEADING_RE = re.compile(r"<h([1-6])\b[^>]*>(.*?)</h\1>", re.S)
+
+
+def _plain_text(fragment):
+    return " ".join(html.unescape(re.sub(r"<[^>]+>", "", fragment)).split())
+
+
+def extract_headings(body_html):
+    """عنوان‌های سطح ۱ تا ۳ با id (برای فهرست و هدر)."""
+    found = []
+    for m in _HEADING_RE.finditer(body_html):
+        id_match = re.search(r'\bid="([^"]+)"', m.group(2))
+        text = _plain_text(m.group(3))
+        if id_match and text:
+            found.append({"level": int(m.group(1)), "id": id_match.group(1), "text": text})
+    return found
+
+
+def wrap_chapter_summaries(body_html):
+    """بخش «خلاصه» هر فصل (تا تیتر هم‌سطح بعدی) داخل کادر برجسته می‌رود."""
+    heads = list(_ANY_HEADING_RE.finditer(body_html))
+    spans = []
+    for idx, m in enumerate(heads):
+        level = int(m.group(1))
+        text = _plain_text(m.group(2))
+        if "خلاصه" not in text and "خلاصۀ" not in text:
+            continue
+        end = len(body_html)
+        for nxt in heads[idx + 1:]:
+            if int(nxt.group(1)) <= level:
+                end = nxt.start()
+                break
+        if body_html[m.end():end].strip():
+            spans.append((m.start(), m.end(), end))
+    out, pos = [], 0
+    for start, head_end, end in spans:
+        if start < pos:
+            continue
+        out.append(body_html[pos:start])
+        out.append('<div class="chapter-summary">' + body_html[start:head_end] + body_html[head_end:end] + "</div>")
+        pos = end
+    out.append(body_html[pos:])
+    return "".join(out)
+
+
+def build_front_matter(title, date_text, headings, toc_pages):
+    """جلد و فهرست مطالب. toc_pages: {id: اندیس صفحهٔ 0-based}."""
+    cover = (
+        '<section class="cover">'
+        '<div class="cover-kicker">جزوه</div>'
+        f'<div class="cover-title">{html.escape(title or "")}</div>'
+        '<div class="cover-line"></div>'
+        f'<div class="cover-meta">{html.escape(date_text or "")}</div>'
+        "</section>"
+    )
+    rows = []
+    for h in headings:
+        page = (toc_pages or {}).get(h["id"])
+        num = to_persian_digits(page + 1) if page is not None else "–"
+        rows.append(
+            f'<div class="toc-row toc-l{h["level"]}">'
+            f'<a href="#{h["id"]}">{html.escape(h["text"])}</a>'
+            f'<span class="toc-dots"></span><span class="toc-num">{num}</span></div>'
+        )
+    toc = '<section class="toc"><div class="toc-title">فهرست مطالب</div>' + "".join(rows) + "</section>"
+    return cover + toc
+
+
+def read_outline(pdf_path):
+    """bookmark های PDF به ترتیب: [(عنوان، اندیس صفحهٔ 0-based)]."""
+    from pypdf import PdfReader
+
+    reader = PdfReader(pdf_path)
+    items = []
+
+    def walk(nodes):
+        for entry in nodes:
+            if isinstance(entry, list):
+                walk(entry)
+                continue
+            try:
+                page = reader.get_destination_page_number(entry)
+            except Exception:
+                page = None
+            items.append((" ".join(str(entry.title).split()), page))
+
+    walk(reader.outline or [])
+    return items
+
+
+def map_headings_to_pages(headings, outline):
+    result, cursor = {}, 0
+    for h in headings:
+        for j in range(cursor, len(outline)):
+            title, page = outline[j]
+            if title == h["text"] and page is not None:
+                result[h["id"]] = page
+                cursor = j + 1
+                break
+    return result
+
+
+def build_front_info(headings, heading_pages):
+    if not heading_pages:
+        return None
+    front_count = min(heading_pages.values())
+    chapter_level = 1 if any(h["level"] == 1 for h in headings) else 2
+    chapters = sorted(
+        (heading_pages[h["id"]], h["text"])
+        for h in headings
+        if h["level"] == chapter_level and h["id"] in heading_pages
+    )
+    return {"front_count": front_count, "chapters": chapters}
+
+
+def build_page_meta(total, front_info):
+    """برای هر صفحه: (نمایش فوتر؟, متن هدر)."""
+    if not front_info:
+        return None
+    front, chapters = front_info["front_count"], front_info["chapters"]
+    meta = []
+    for i in range(total):
+        if i < front:
+            meta.append((False, ""))
+            continue
+        current = ""
+        for idx, text in chapters:
+            if idx <= i:
+                current = text
+        meta.append((True, current))
+    return meta
+
+
 def build_html(
     md_text,
     orientation="portrait",
@@ -1065,6 +1315,11 @@ def build_html(
     print_mode=False,
     template="classic",
     accent="blue",
+    paper=True,
+    title="",
+    front=False,
+    toc_pages=None,
+    date_text="",
 ):
     """Markdown → HTML کامل. خروجی: (html, has_math, has_mermaid)"""
     # نمودارهای mermaid قبل از هر پردازش دیگری جدا می‌شوند و بعد از پاک‌سازی HTML برمی‌گردند
@@ -1116,6 +1371,11 @@ def build_html(
         if n == 0:
             body = body.replace(placeholder, pre)
 
+    headings = extract_headings(body)
+    body = wrap_chapter_summaries(body)
+    if front and headings:
+        body = build_front_matter(title, date_text, headings, toc_pages) + body
+
     classes = []
     if compact:
         classes.append("compact-mode")
@@ -1129,6 +1389,8 @@ def build_html(
         classes.append("print-mode")
     if template in ("academic", "minimal"):
         classes.append(f"tpl-{template}")
+    if not paper:
+        classes.append("paper-off")
     body_style = f"--accent-color: {ACCENTS.get(accent, ACCENTS['blue'])}"
 
     scripts = ""
@@ -1148,7 +1410,7 @@ def build_html(
         .replace("{{BODY_STYLE}}", body_style)
         .replace("{{CONTENT}}", body)
     )
-    return full_html, has_math, bool(mermaid_blocks)
+    return full_html, has_math, bool(mermaid_blocks), headings
 
 
 def error_detail(exc) -> str:
@@ -1255,6 +1517,39 @@ def make_router(documents: dict):
     return router
 
 
+async def render_pdf(context, documents, full_html, has_math, has_mermaid, out_path, page_format, orientation, margin):
+    """یک صفحه را رندر و PDF می‌کند. هر بار URL تازه تا کش مرورگر دخالت نکند."""
+    url = f"http://render.invalid/doc-{secrets.token_hex(6)}.html"
+    documents[url] = full_html
+    page = await context.new_page()
+    try:
+        page.set_default_timeout(RENDER_TIMEOUT_MS)
+        await page.goto(url, wait_until="load")
+        await page.evaluate(RENDER_JS, {"math": has_math, "useMermaid": has_mermaid})
+        stats = await page.evaluate(RENDER_STATS_JS)
+        logger.info("render stats: %s (version %s)", stats, BOT_VERSION)
+        if has_math and stats.get("arith", 0) > 0 and stats.get("mjx", 0) == 0:
+            raise RuntimeError("MathJax did not render any formula")
+        await page.pdf(
+            path=out_path,
+            format=page_format,
+            landscape=(orientation == "landscape"),
+            print_background=True,
+            outline=True,
+            tagged=True,
+            margin={
+                "top": margin,
+                "bottom": margin,
+                "left": margin,
+                "right": margin,
+            },
+        )
+    finally:
+        with contextlib.suppress(Exception):
+            await page.close()
+    return stats
+
+
 async def generate_pdf_output(
     md_text,
     output_pdf_path,
@@ -1267,51 +1562,69 @@ async def generate_pdf_output(
     title="",
     template="classic",
     accent="blue",
+    front=False,
+    paper=True,
 ):
-    full_html, has_math, has_mermaid = await asyncio.to_thread(
-        build_html, md_text, orientation, compact, columns, font_size, print_mode, template, accent
+    page_format = page_format or PDF_PAGE_FORMAT
+    page_margin = "12mm" if compact else TEMPLATE_MARGINS.get(template, "20mm")
+    build_kw = dict(
+        orientation=orientation,
+        compact=compact,
+        columns=columns,
+        font_size=font_size,
+        print_mode=print_mode,
+        template=template,
+        accent=accent,
+        paper=paper,
+        title=title,
+        front=front,
+        date_text=persian_date_text() if front else "",
     )
 
     browser = await ensure_browser()
     context = await browser.new_context(service_workers="block")
+    documents = {}
     try:
-        documents = {DOC_URL: full_html}
         await context.route("**/*", make_router(documents))
-        page = await context.new_page()
-        page.set_default_timeout(RENDER_TIMEOUT_MS)
-        await page.goto(DOC_URL, wait_until="load")
-        await page.evaluate(RENDER_JS, {"math": has_math, "useMermaid": has_mermaid})
-        stats = await page.evaluate(RENDER_STATS_JS)
-        logger.info("render stats: %s (version %s)", stats, BOT_VERSION)
-        if has_math and stats.get("arith", 0) > 0 and stats.get("mjx", 0) == 0:
-            raise RuntimeError("MathJax did not render any formula")
-
-        page_margin = "12mm" if compact else TEMPLATE_MARGINS.get(template, "20mm")
-        page_format = page_format or PDF_PAGE_FORMAT
-        await page.pdf(
-            path=output_pdf_path,
-            format=page_format,
-            landscape=(orientation == "landscape"),
-            print_background=True,
-            outline=True,
-            tagged=True,
-            margin={
-                "top": page_margin,
-                "bottom": page_margin,
-                "left": page_margin,
-                "right": page_margin,
-            },
+        full_html, has_math, has_mermaid, headings = await asyncio.to_thread(
+            build_html, md_text, **build_kw
         )
+
+        front_info = None
+        if front and headings:
+            # مرحلهٔ اول: پیدا کردن صفحهٔ هر عنوان از روی bookmark ها
+            pass1 = output_pdf_path + ".pass1.pdf"
+            await render_pdf(context, documents, full_html, has_math, has_mermaid,
+                             pass1, page_format, orientation, page_margin)
+            try:
+                outline = await asyncio.to_thread(read_outline, pass1)
+            except Exception:
+                logger.exception("Reading PDF outline failed; TOC page numbers will be missing")
+                outline = []
+            finally:
+                with contextlib.suppress(OSError):
+                    os.remove(pass1)
+
+            heading_pages = map_headings_to_pages(headings, outline)
+            # مرحلهٔ دوم: فهرست با شماره‌صفحه
+            full_html, has_math, has_mermaid, headings = await asyncio.to_thread(
+                build_html, md_text, toc_pages=heading_pages, **build_kw
+            )
+            front_info = build_front_info(headings, heading_pages)
+
+        stats = await render_pdf(context, documents, full_html, has_math, has_mermaid,
+                                 output_pdf_path, page_format, orientation, page_margin)
         bookmarks_before = await asyncio.to_thread(count_bookmarks, output_pdf_path)
         footer_status = await add_footer(
-            context, documents, output_pdf_path, title, page_format, orientation, page_margin
+            context, documents, output_pdf_path, title, page_format, orientation,
+            page_margin, front_info,
         )
         stats["footer"] = footer_status
         stats["bookmarks_before_footer"] = bookmarks_before
         stats["bookmarks"] = await asyncio.to_thread(count_bookmarks, output_pdf_path)
-        logger.info(
-            "footer=%s bookmarks=%s->%s", footer_status, bookmarks_before, stats["bookmarks"]
-        )
+        stats["front_matter"] = bool(front_info)
+        logger.info("footer=%s bookmarks=%s->%s front=%s", footer_status,
+                    bookmarks_before, stats["bookmarks"], bool(front_info))
     finally:
         with contextlib.suppress(Exception):
             await context.close()
@@ -1399,6 +1712,10 @@ def get_settings_keyboard(chat_id):
     accent = get_user_setting(chat_id, "accent", "blue")
     template_btn = f"📐 قالب: {TEMPLATE_LABELS.get(template, 'کلاسیک')}"
     accent_btn = ACCENT_LABELS.get(accent, ACCENT_LABELS["blue"]).replace(" ", " رنگ: ", 1)
+    front = get_user_setting(chat_id, "front", True)
+    paper = get_user_setting(chat_id, "paper", True)
+    front_btn = "📄 جلد و فهرست: روشن" if front else "📄 جلد و فهرست: خاموش"
+    paper_btn = "🧾 پس‌زمینه کرم: روشن" if paper else "⬜ پس‌زمینه کرم: خاموش"
 
     keyboard = [
         [
@@ -1414,6 +1731,10 @@ def get_settings_keyboard(chat_id):
         [
             InlineKeyboardButton(template_btn, callback_data="cycle_template"),
             InlineKeyboardButton(accent_btn, callback_data="cycle_accent"),
+        ],
+        [
+            InlineKeyboardButton(front_btn, callback_data="toggle_front"),
+            InlineKeyboardButton(paper_btn, callback_data="toggle_paper"),
         ],
     ]
     return InlineKeyboardMarkup(keyboard)
@@ -1482,6 +1803,12 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         current = get_user_setting(chat_id, "accent", "blue")
         index = keys.index(current) if current in keys else 0
         set_user_setting(chat_id, "accent", keys[(index + 1) % len(keys)])
+    elif data == "toggle_front":
+        current = get_user_setting(chat_id, "front", True)
+        set_user_setting(chat_id, "front", not current)
+    elif data == "toggle_paper":
+        current = get_user_setting(chat_id, "paper", True)
+        set_user_setting(chat_id, "paper", not current)
 
     await show_menu(update)
 
