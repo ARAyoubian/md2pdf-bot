@@ -55,7 +55,7 @@ from telegram.ext import (
     filters,
 )
 
-BOT_VERSION = "r14-front-matter"
+BOT_VERSION = "r15-full-page-paper"
 
 logging.basicConfig(
     format="%(asctime)s %(levelname)s %(name)s: %(message)s", level=logging.INFO
@@ -548,7 +548,7 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
         body.tpl-minimal pre, body.tpl-minimal .codehilite { border: none; }
 
         /* ───── پس‌زمینهٔ کاغذی ───── */
-        body:not(.print-mode) { background-color: #fbf8f1; }
+        body:not(.print-mode) { background-color: #fbf8f1; } /* همان PAPER_COLOR */
         body.paper-off, body.print-mode { background-color: #ffffff; }
 
         /* ───── نشان عنوان‌دار callout ───── */
@@ -727,6 +727,13 @@ RENDER_STATS_JS = r"""
 """
 
 FOOTER_URL = "http://render.invalid/footer.html"
+PAPER_URL = "http://render.invalid/paper.html"
+PAPER_COLOR = "#fbf8f1"
+PAPER_BG_TEMPLATE = """<!DOCTYPE html>
+<html style="background: {{COLOR}}"><head><meta charset="utf-8">
+<style>@page { margin: 0; } html, body { margin: 0; padding: 0; min-height: 100%; background: {{COLOR}}; }</style>
+</head><body></body></html>
+"""
 PAGE_SIZES_MM = {"A4": (210.0, 297.0), "Letter": (215.9, 279.4)}
 _PERSIAN_DIGITS = str.maketrans("0123456789", "۰۱۲۳۴۵۶۷۸۹")
 
@@ -820,22 +827,26 @@ def count_bookmarks(pdf_path: str) -> int:
         return -1
 
 
-def stamp_footer(pdf_path: str, overlay_bytes: bytes) -> None:
-    """صفحات overlay را روی صفحات PDF اصلی می‌نشاند (فهرست bookmark ها حفظ می‌شود)."""
+def stamp_footer(pdf_path: str, overlay_bytes: bytes, bg_bytes: bytes = None) -> None:
+    """هدر/فوتر را روی صفحات می‌نشاند و (اختیاری) رنگ کاغذ را زیر کل صفحه می‌گذارد."""
     from pypdf import PdfReader, PdfWriter
 
     base = PdfReader(pdf_path)
     overlay = PdfReader(io.BytesIO(overlay_bytes))
+    bg_page = PdfReader(io.BytesIO(bg_bytes)).pages[0] if bg_bytes else None
     writer = PdfWriter(clone_from=base)
-    for index in range(min(len(writer.pages), len(overlay.pages))):
-        writer.pages[index].merge_page(overlay.pages[index])
+    for index, page in enumerate(writer.pages):
+        if bg_page is not None:
+            page.merge_page(bg_page, over=False)
+        if index < len(overlay.pages):
+            page.merge_page(overlay.pages[index])
     tmp_path = pdf_path + ".stamp.tmp"
     with open(tmp_path, "wb") as fh:
         writer.write(fh)
     os.replace(tmp_path, pdf_path)
 
 
-async def add_footer(context, documents, pdf_path, title, page_format, orientation, pad, front_info=None):
+async def add_footer(context, documents, pdf_path, title, page_format, orientation, pad, front_info=None, paper_color=None):
     """فوتر و هدر فارسی؛ اگر هر مرحله خطا بدهد PDF بدون آن‌ها می‌ماند. وضعیت را برمی‌گرداند."""
     try:
         size = PAGE_SIZES_MM.get(page_format)
@@ -863,7 +874,22 @@ async def add_footer(context, documents, pdf_path, title, page_format, orientati
             margin={"top": "0", "bottom": "0", "left": "0", "right": "0"},
         )
         await footer_page.close()
-        await asyncio.to_thread(stamp_footer, pdf_path, overlay_bytes)
+
+        bg_bytes = None
+        if paper_color:
+            documents[PAPER_URL] = PAPER_BG_TEMPLATE.replace("{{COLOR}}", paper_color)
+            bg_page = await context.new_page()
+            bg_page.set_default_timeout(RENDER_TIMEOUT_MS)
+            await bg_page.goto(PAPER_URL, wait_until="load")
+            bg_bytes = await bg_page.pdf(
+                format=page_format,
+                landscape=(orientation == "landscape"),
+                print_background=True,
+                margin={"top": "0", "bottom": "0", "left": "0", "right": "0"},
+            )
+            await bg_page.close()
+
+        await asyncio.to_thread(stamp_footer, pdf_path, overlay_bytes, bg_bytes)
         return "ok"
     except Exception as exc:
         logger.exception("Footer stamping failed; keeping PDF without footer")
@@ -1618,11 +1644,13 @@ async def generate_pdf_output(
         footer_status = await add_footer(
             context, documents, output_pdf_path, title, page_format, orientation,
             page_margin, front_info,
+            PAPER_COLOR if (paper and not print_mode) else None,
         )
         stats["footer"] = footer_status
         stats["bookmarks_before_footer"] = bookmarks_before
         stats["bookmarks"] = await asyncio.to_thread(count_bookmarks, output_pdf_path)
         stats["front_matter"] = bool(front_info)
+        stats["paper_bg"] = bool(paper and not print_mode)
         logger.info("footer=%s bookmarks=%s->%s front=%s", footer_status,
                     bookmarks_before, stats["bookmarks"], bool(front_info))
     finally:
