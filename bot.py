@@ -54,7 +54,7 @@ from telegram.ext import (
     filters,
 )
 
-BOT_VERSION = "r12-footer-diagnostics"
+BOT_VERSION = "r13-templates"
 
 logging.basicConfig(
     format="%(asctime)s %(levelname)s %(name)s: %(message)s", level=logging.INFO
@@ -87,6 +87,17 @@ JS_HEAP_MB = _env_int("JS_HEAP_MB", 192)
 TELEGRAM_UPLOAD_LIMIT = 49 * 1024 * 1024
 PDF_PAGE_FORMAT = os.environ.get("PDF_PAGE_FORMAT", "A4")
 FONT_SIZES = ("small", "normal", "large")
+TEMPLATES = ("classic", "academic", "minimal")
+TEMPLATE_LABELS = {"classic": "کلاسیک", "academic": "آکادمیک", "minimal": "مینیمال"}
+TEMPLATE_MARGINS = {"classic": "20mm", "academic": "25mm", "minimal": "22mm"}
+ACCENTS = {
+    "blue": "#0969da",
+    "green": "#1a7f37",
+    "purple": "#7c3aed",
+    "red": "#cf222e",
+    "gray": "#444444",
+}
+ACCENT_LABELS = {"blue": "🔵 آبی", "green": "🟢 سبز", "purple": "🟣 بنفش", "red": "🔴 قرمز", "gray": "⚫ خاکستری"}
 ALLOW_REMOTE_IMAGES = os.environ.get("ALLOW_REMOTE_IMAGES", "0") == "1"
 DEBUG_ERRORS = os.environ.get("DEBUG_ERRORS", "0") == "1"
 
@@ -231,6 +242,8 @@ def get_conversion_settings(chat_id):
         "page_format": get_user_setting(chat_id, "page_format", PDF_PAGE_FORMAT),
         "font_size": get_user_setting(chat_id, "font_size", "normal"),
         "print_mode": get_user_setting(chat_id, "print_mode", False),
+        "template": get_user_setting(chat_id, "template", "classic"),
+        "accent": get_user_setting(chat_id, "accent", "blue"),
     }
 
 
@@ -489,11 +502,53 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
             border-inline-start: 4px solid #333333 !important;
         }
 
+        /* ───── رنگ تأکیدی ───── */
+        h2 { color: var(--accent-color); }
+        th { color: var(--accent-color); }
+
+        /* ───── قالب آکادمیک ───── */
+        body.tpl-academic:not(.compact-mode) { line-height: 1.95; }
+        body.tpl-academic h1 {
+            text-align: center;
+            border-bottom: 1px solid var(--accent-color);
+        }
+        body.tpl-academic h2 { border-bottom: none; }
+        body.tpl-academic blockquote,
+        body.tpl-academic blockquote[class*="callout-"] {
+            background: transparent;
+            border: 1px solid var(--accent-color);
+            border-radius: 2px;
+        }
+        body.tpl-academic table {
+            box-shadow: none;
+            border-top: 1.5px solid #333333;
+            border-bottom: 1.5px solid #333333;
+        }
+        body.tpl-academic th, body.tpl-academic td { border: none; }
+        body.tpl-academic th { background: transparent; border-bottom: 1px solid #333333; }
+        body.tpl-academic tr:nth-child(even) { background: transparent; }
+
+        /* ───── قالب مینیمال ───── */
+        body.tpl-minimal h1 { border-bottom: none; font-weight: 400; }
+        body.tpl-minimal h2 { border-bottom: none; }
+        body.tpl-minimal blockquote,
+        body.tpl-minimal blockquote[class*="callout-"] {
+            background: transparent;
+            border: none;
+            border-inline-start: 2px solid #999999;
+            border-radius: 0;
+        }
+        body.tpl-minimal table { box-shadow: none; }
+        body.tpl-minimal th, body.tpl-minimal td { border: none; border-bottom: 1px solid #eeeeee; }
+        body.tpl-minimal th { background: transparent; border-bottom: 1px solid #bbbbbb; }
+        body.tpl-minimal tr:nth-child(even) { background: transparent; }
+        body.tpl-minimal pre, body.tpl-minimal .codehilite { border: none; }
+
         /* PYGMENTS_INJECTION */
     </style>
     {{SCRIPTS}}
 </head>
-<body class="{{BODY_CLASSES}}">
+<body class="{{BODY_CLASSES}}" style="{{BODY_STYLE}}">
 {{CONTENT}}
 </body>
 </html>
@@ -1001,7 +1056,16 @@ ALLOWED_URL_SCHEMES = {"http", "https", "mailto", "data"}
 DIR_AUTO_RE = re.compile(r"<(p|h[1-6]|ul|ol|li|table|blockquote|dl)(?=[\s>])")
 
 
-def build_html(md_text, orientation="portrait", compact=False, columns=1, font_size="normal", print_mode=False):
+def build_html(
+    md_text,
+    orientation="portrait",
+    compact=False,
+    columns=1,
+    font_size="normal",
+    print_mode=False,
+    template="classic",
+    accent="blue",
+):
     """Markdown → HTML کامل. خروجی: (html, has_math, has_mermaid)"""
     # نمودارهای mermaid قبل از هر پردازش دیگری جدا می‌شوند و بعد از پاک‌سازی HTML برمی‌گردند
     token = "MMD" + secrets.token_hex(8) + "X"
@@ -1063,6 +1127,9 @@ def build_html(md_text, orientation="portrait", compact=False, columns=1, font_s
         classes.append(f"font-{font_size}")
     if print_mode:
         classes.append("print-mode")
+    if template in ("academic", "minimal"):
+        classes.append(f"tpl-{template}")
+    body_style = f"--accent-color: {ACCENTS.get(accent, ACCENTS['blue'])}"
 
     scripts = ""
     if has_math:
@@ -1078,6 +1145,7 @@ def build_html(md_text, orientation="portrait", compact=False, columns=1, font_s
         HTML_TEMPLATE.replace("/* PYGMENTS_INJECTION */", CODE_STYLE_LIGHT)
         .replace("{{SCRIPTS}}", scripts)
         .replace("{{BODY_CLASSES}}", " ".join(classes))
+        .replace("{{BODY_STYLE}}", body_style)
         .replace("{{CONTENT}}", body)
     )
     return full_html, has_math, bool(mermaid_blocks)
@@ -1197,9 +1265,11 @@ async def generate_pdf_output(
     font_size="normal",
     print_mode=False,
     title="",
+    template="classic",
+    accent="blue",
 ):
     full_html, has_math, has_mermaid = await asyncio.to_thread(
-        build_html, md_text, orientation, compact, columns, font_size, print_mode
+        build_html, md_text, orientation, compact, columns, font_size, print_mode, template, accent
     )
 
     browser = await ensure_browser()
@@ -1216,7 +1286,7 @@ async def generate_pdf_output(
         if has_math and stats.get("arith", 0) > 0 and stats.get("mjx", 0) == 0:
             raise RuntimeError("MathJax did not render any formula")
 
-        page_margin = "12mm" if compact else "20mm"
+        page_margin = "12mm" if compact else TEMPLATE_MARGINS.get(template, "20mm")
         page_format = page_format or PDF_PAGE_FORMAT
         await page.pdf(
             path=output_pdf_path,
@@ -1325,6 +1395,10 @@ def get_settings_keyboard(chat_id):
         "large": "🔠 فونت: بزرگ",
     }.get(font_size, "🔤 فونت: معمولی")
     print_btn = "🖨 چاپ: کم‌مصرف" if print_mode else "🎨 چاپ: رنگی"
+    template = get_user_setting(chat_id, "template", "classic")
+    accent = get_user_setting(chat_id, "accent", "blue")
+    template_btn = f"📐 قالب: {TEMPLATE_LABELS.get(template, 'کلاسیک')}"
+    accent_btn = ACCENT_LABELS.get(accent, ACCENT_LABELS["blue"]).replace(" ", " رنگ: ", 1)
 
     keyboard = [
         [
@@ -1337,6 +1411,10 @@ def get_settings_keyboard(chat_id):
             InlineKeyboardButton(font_btn, callback_data="cycle_font"),
         ],
         [InlineKeyboardButton(print_btn, callback_data="toggle_print")],
+        [
+            InlineKeyboardButton(template_btn, callback_data="cycle_template"),
+            InlineKeyboardButton(accent_btn, callback_data="cycle_accent"),
+        ],
     ]
     return InlineKeyboardMarkup(keyboard)
 
@@ -1395,6 +1473,15 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif data == "toggle_print":
         current = get_user_setting(chat_id, "print_mode", False)
         set_user_setting(chat_id, "print_mode", not current)
+    elif data == "cycle_template":
+        current = get_user_setting(chat_id, "template", "classic")
+        index = TEMPLATES.index(current) if current in TEMPLATES else 0
+        set_user_setting(chat_id, "template", TEMPLATES[(index + 1) % len(TEMPLATES)])
+    elif data == "cycle_accent":
+        keys = list(ACCENTS)
+        current = get_user_setting(chat_id, "accent", "blue")
+        index = keys.index(current) if current in keys else 0
+        set_user_setting(chat_id, "accent", keys[(index + 1) % len(keys)])
 
     await show_menu(update)
 
