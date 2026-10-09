@@ -22,6 +22,7 @@ import asyncio
 import contextlib
 import gc
 import html
+import importlib.util
 import io
 import json
 import logging
@@ -53,7 +54,7 @@ from telegram.ext import (
     filters,
 )
 
-BOT_VERSION = "r11-footer-overlay"
+BOT_VERSION = "r12-footer-diagnostics"
 
 logging.basicConfig(
     format="%(asctime)s %(levelname)s %(name)s: %(message)s", level=logging.INFO
@@ -668,6 +669,22 @@ def count_pdf_pages(pdf_path: str) -> int:
     return len(PdfReader(pdf_path).pages)
 
 
+def count_bookmarks(pdf_path: str) -> int:
+    """تعداد bookmark های PDF؛ -1 یعنی pypdf در دسترس نیست یا خواندن ناموفق بود."""
+    try:
+        from pypdf import PdfReader
+
+        def walk(items):
+            total = 0
+            for item in items:
+                total += walk(item) if isinstance(item, list) else 1
+            return total
+
+        return walk(PdfReader(pdf_path).outline)
+    except Exception:
+        return -1
+
+
 def stamp_footer(pdf_path: str, overlay_bytes: bytes) -> None:
     """صفحات overlay را روی صفحات PDF اصلی می‌نشاند (فهرست bookmark ها حفظ می‌شود)."""
     from pypdf import PdfReader, PdfWriter
@@ -684,19 +701,19 @@ def stamp_footer(pdf_path: str, overlay_bytes: bytes) -> None:
 
 
 async def add_footer(context, documents, pdf_path, title, page_format, orientation, pad):
-    """فوتر فارسی؛ اگر هر مرحله خطا بدهد PDF بدون فوتر همان‌طور می‌ماند."""
+    """فوتر فارسی؛ اگر هر مرحله خطا بدهد PDF بدون فوتر همان‌طور می‌ماند. وضعیت را برمی‌گرداند."""
     try:
         size = PAGE_SIZES_MM.get(page_format)
         if size is None:
             logger.warning("Footer skipped: unknown page format %s", page_format)
-            return
+            return f"skipped: unknown page format {page_format}"
         width_mm, height_mm = size
         if orientation == "landscape":
             width_mm, height_mm = height_mm, width_mm
 
         total = await asyncio.to_thread(count_pdf_pages, pdf_path)
         if total < 1:
-            return
+            return "skipped: empty pdf"
         documents[FOOTER_URL] = build_footer_overlay(total, title, pad, width_mm, height_mm)
 
         footer_page = await context.new_page()
@@ -711,8 +728,10 @@ async def add_footer(context, documents, pdf_path, title, page_format, orientati
         )
         await footer_page.close()
         await asyncio.to_thread(stamp_footer, pdf_path, overlay_bytes)
-    except Exception:
+        return "ok"
+    except Exception as exc:
         logger.exception("Footer stamping failed; keeping PDF without footer")
+        return f"failed: {type(exc).__name__}: {str(exc)[:200]}"
 
 
 def render_warnings(stats, title=None) -> str:
@@ -1213,8 +1232,15 @@ async def generate_pdf_output(
                 "right": page_margin,
             },
         )
-        await add_footer(
+        bookmarks_before = await asyncio.to_thread(count_bookmarks, output_pdf_path)
+        footer_status = await add_footer(
             context, documents, output_pdf_path, title, page_format, orientation, page_margin
+        )
+        stats["footer"] = footer_status
+        stats["bookmarks_before_footer"] = bookmarks_before
+        stats["bookmarks"] = await asyncio.to_thread(count_bookmarks, output_pdf_path)
+        logger.info(
+            "footer=%s bookmarks=%s->%s", footer_status, bookmarks_before, stats["bookmarks"]
         )
     finally:
         with contextlib.suppress(Exception):
@@ -1575,7 +1601,11 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await process_conversion(update, context, text)
 
 
-SELFTEST_MD = r"""فرمول محاسبه: $$INR = \left(\frac{\text{PT}_{\text{Patient}}}{\text{MNPT}}\right)^{ISI}$$
+SELFTEST_MD = r"""# عنوان آزمایشی
+
+## بخش اول
+
+فرمول محاسبه: $$INR = \left(\frac{\text{PT}_{\text{Patient}}}{\text{MNPT}}\right)^{ISI}$$
 
 - $\text{MNPT}$: آزمون
 - $ISI$: آزمون
@@ -1590,6 +1620,7 @@ async def selftest(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "mathjax": (ASSETS_DIR / "mathjax" / "tex-chtml.js").is_file(),
         "mermaid": (ASSETS_DIR / "mermaid" / "mermaid.min.js").is_file(),
         "font": (ASSETS_DIR / "fonts" / "Vazirmatn-Variable.woff2").is_file(),
+        "pypdf": importlib.util.find_spec("pypdf") is not None,
     }
     status = await update.message.reply_text("🧪 در حال آزمایش ...")
     with tempfile.TemporaryDirectory(prefix="md2pdf_self_") as tmpdir:
