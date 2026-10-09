@@ -53,7 +53,7 @@ from telegram.ext import (
     filters,
 )
 
-BOT_VERSION = "r10-output-quality"
+BOT_VERSION = "r11-footer-overlay"
 
 logging.basicConfig(
     format="%(asctime)s %(levelname)s %(name)s: %(message)s", level=logging.INFO
@@ -601,16 +601,118 @@ RENDER_STATS_JS = r"""
 }
 """
 
-FOOTER_HTML = """
-<div style="font-family: 'Vazirmatn', 'Noto Sans Arabic', 'DejaVu Sans', Arial, sans-serif; font-size: 9px; width: 100%; box-sizing: border-box; padding: 0 {{PAD}}; display: flex; justify-content: space-between; align-items: center; direction: rtl; color: #8c959f;">
-    <span dir="auto" style="max-width: 70%; overflow: hidden; white-space: nowrap; text-overflow: ellipsis;">{{TITLE}}</span>
-    <span dir="rtl">صفحه <span class="pageNumber"></span> از <span class="totalPages"></span></span>
-</div>
+FOOTER_URL = "http://render.invalid/footer.html"
+PAGE_SIZES_MM = {"A4": (210.0, 297.0), "Letter": (215.9, 279.4)}
+_PERSIAN_DIGITS = str.maketrans("0123456789", "۰۱۲۳۴۵۶۷۸۹")
+
+FOOTER_OVERLAY_TEMPLATE = r"""<!DOCTYPE html>
+<html><head><meta charset="utf-8"><style>
+@font-face {
+    font-family: 'Vazirmatn';
+    src: url('/assets/fonts/Vazirmatn-Variable.woff2') format('woff2');
+    font-weight: 100 900;
+    font-display: block;
+}
+@page { margin: 0; }
+html, body { margin: 0; padding: 0; }
+.pg {
+    position: relative;
+    width: {{W}}mm;
+    height: {{H}}mm;
+    overflow: hidden;
+    break-after: page;
+    page-break-after: always;
+}
+.pg:last-child { break-after: auto; page-break-after: auto; }
+.ft {
+    position: absolute;
+    left: {{PAD}};
+    right: {{PAD}};
+    bottom: 6mm;
+    display: flex;
+    justify-content: space-between;
+    align-items: baseline;
+    direction: rtl;
+    font-family: 'Vazirmatn', 'Noto Sans Arabic', sans-serif;
+    font-size: 8.5pt;
+    color: #8c959f;
+}
+.ttl { max-width: 70%; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+</style></head><body>{{PAGES}}</body></html>
 """
 
 
-def build_footer(title: str, pad: str) -> str:
-    return FOOTER_HTML.replace("{{PAD}}", pad).replace("{{TITLE}}", html.escape(title or ""))
+def to_persian_digits(value) -> str:
+    return str(value).translate(_PERSIAN_DIGITS)
+
+
+def build_footer_overlay(total: int, title: str, pad: str, width_mm: float, height_mm: float) -> str:
+    """یک صفحهٔ HTML با یک بلوک فوتر برای هر صفحهٔ PDF (فونت و اعداد فارسی)."""
+    safe_title = html.escape(title or "")
+    pages = "".join(
+        f'<div class="pg"><div class="ft"><span class="ttl" dir="auto">{safe_title}</span>'
+        f"<span>صفحه {to_persian_digits(i)} از {to_persian_digits(total)}</span></div></div>"
+        for i in range(1, total + 1)
+    )
+    return (
+        FOOTER_OVERLAY_TEMPLATE.replace("{{W}}", f"{width_mm:.2f}")
+        .replace("{{H}}", f"{height_mm - 1:.2f}")
+        .replace("{{PAD}}", pad)
+        .replace("{{PAGES}}", pages)
+    )
+
+
+def count_pdf_pages(pdf_path: str) -> int:
+    from pypdf import PdfReader
+
+    return len(PdfReader(pdf_path).pages)
+
+
+def stamp_footer(pdf_path: str, overlay_bytes: bytes) -> None:
+    """صفحات overlay را روی صفحات PDF اصلی می‌نشاند (فهرست bookmark ها حفظ می‌شود)."""
+    from pypdf import PdfReader, PdfWriter
+
+    base = PdfReader(pdf_path)
+    overlay = PdfReader(io.BytesIO(overlay_bytes))
+    writer = PdfWriter(clone_from=base)
+    for index in range(min(len(writer.pages), len(overlay.pages))):
+        writer.pages[index].merge_page(overlay.pages[index])
+    tmp_path = pdf_path + ".stamp.tmp"
+    with open(tmp_path, "wb") as fh:
+        writer.write(fh)
+    os.replace(tmp_path, pdf_path)
+
+
+async def add_footer(context, documents, pdf_path, title, page_format, orientation, pad):
+    """فوتر فارسی؛ اگر هر مرحله خطا بدهد PDF بدون فوتر همان‌طور می‌ماند."""
+    try:
+        size = PAGE_SIZES_MM.get(page_format)
+        if size is None:
+            logger.warning("Footer skipped: unknown page format %s", page_format)
+            return
+        width_mm, height_mm = size
+        if orientation == "landscape":
+            width_mm, height_mm = height_mm, width_mm
+
+        total = await asyncio.to_thread(count_pdf_pages, pdf_path)
+        if total < 1:
+            return
+        documents[FOOTER_URL] = build_footer_overlay(total, title, pad, width_mm, height_mm)
+
+        footer_page = await context.new_page()
+        footer_page.set_default_timeout(RENDER_TIMEOUT_MS)
+        await footer_page.goto(FOOTER_URL, wait_until="load")
+        await footer_page.evaluate("document.fonts.ready.then(() => true)")
+        overlay_bytes = await footer_page.pdf(
+            format=page_format,
+            landscape=(orientation == "landscape"),
+            print_background=False,
+            margin={"top": "0", "bottom": "0", "left": "0", "right": "0"},
+        )
+        await footer_page.close()
+        await asyncio.to_thread(stamp_footer, pdf_path, overlay_bytes)
+    except Exception:
+        logger.exception("Footer stamping failed; keeping PDF without footer")
 
 
 def render_warnings(stats, title=None) -> str:
@@ -1028,7 +1130,7 @@ _ASSET_MIME = {
 }
 
 
-def make_router(full_html: str):
+def make_router(documents: dict):
     """فقط سند و فایل‌های محلی assets مجازند؛ بقیهٔ درخواست‌ها (از جمله file://) بسته می‌شوند."""
     assets_root = ASSETS_DIR.resolve()
 
@@ -1036,9 +1138,9 @@ def make_router(full_html: str):
         request = route.request
         url = request.url
         try:
-            if url == DOC_URL:
+            if url in documents:
                 await route.fulfill(
-                    status=200, content_type="text/html; charset=utf-8", body=full_html
+                    status=200, content_type="text/html; charset=utf-8", body=documents[url]
                 )
                 return
             if url.startswith(ASSET_PREFIX):
@@ -1084,7 +1186,8 @@ async def generate_pdf_output(
     browser = await ensure_browser()
     context = await browser.new_context(service_workers="block")
     try:
-        await context.route("**/*", make_router(full_html))
+        documents = {DOC_URL: full_html}
+        await context.route("**/*", make_router(documents))
         page = await context.new_page()
         page.set_default_timeout(RENDER_TIMEOUT_MS)
         await page.goto(DOC_URL, wait_until="load")
@@ -1095,14 +1198,12 @@ async def generate_pdf_output(
             raise RuntimeError("MathJax did not render any formula")
 
         page_margin = "12mm" if compact else "20mm"
+        page_format = page_format or PDF_PAGE_FORMAT
         await page.pdf(
             path=output_pdf_path,
-            format=page_format or PDF_PAGE_FORMAT,
+            format=page_format,
             landscape=(orientation == "landscape"),
             print_background=True,
-            display_header_footer=True,
-            header_template="<div></div>",
-            footer_template=build_footer(title, page_margin),
             outline=True,
             tagged=True,
             margin={
@@ -1111,6 +1212,9 @@ async def generate_pdf_output(
                 "left": page_margin,
                 "right": page_margin,
             },
+        )
+        await add_footer(
+            context, documents, output_pdf_path, title, page_format, orientation, page_margin
         )
     finally:
         with contextlib.suppress(Exception):
