@@ -167,6 +167,54 @@ def build_reference_docx(out_path: str, font_name: str = FARSI_FONT) -> str:
     return out_path
 
 
+# ───────────────────────────── فونت static برای LibreOffice ─────────────────────────────
+# LibreOffice با فونت variable خوب کار نمی‌کند (وزن‌ها اعمال نمی‌شوند و بولد مصنوعی می‌شود).
+# این تابع از فونت variable دو فایل static (Regular و Bold) می‌سازد.
+
+
+def _set_static_names(font, family, style, bold):
+    name = font["name"]
+    for name_id in (1, 2, 3, 4, 6, 16, 17):
+        name.removeNames(nameID=name_id)
+    full = f"{family} {style}"
+    ps_name = f"{family}-{style}"
+    for platform, encoding, language in ((3, 1, 0x409), (1, 0, 0)):
+        name.setName(family, 1, platform, encoding, language)
+        name.setName(style, 2, platform, encoding, language)
+        name.setName(f"{ps_name};static", 3, platform, encoding, language)
+        name.setName(full, 4, platform, encoding, language)
+        name.setName(ps_name, 6, platform, encoding, language)
+
+    os2 = font["OS/2"]
+    os2.usWeightClass = 700 if bold else 400
+    selection = os2.fsSelection & ~(0x01 | 0x20 | 0x40)
+    os2.fsSelection = selection | (0x20 if bold else 0x40)
+
+    head = font["head"]
+    head.macStyle = (head.macStyle | 0x01) if bold else (head.macStyle & ~0x01)
+
+    if "STAT" in font:
+        del font["STAT"]
+
+
+def make_static_fonts(variable_ttf, out_dir, family="Vazirmatn"):
+    """از فونت variable، فایل‌های static Regular و Bold می‌سازد و مسیرها را برمی‌گرداند."""
+    from fontTools.ttLib import TTFont
+    from fontTools.varLib import instancer
+
+    os.makedirs(out_dir, exist_ok=True)
+    result = {}
+    for style, weight, bold in (("Regular", 400, False), ("Bold", 700, True)):
+        font = TTFont(variable_ttf)
+        if "fvar" in font:
+            font = instancer.instantiateVariableFont(font, {"wght": weight}, updateFontNames=False)
+        _set_static_names(font, family, style, bold)
+        out_path = os.path.join(out_dir, f"{family}-{style}.ttf")
+        font.save(out_path)
+        result[style] = out_path
+    return result
+
+
 # ───────────────────────────── DOCX → PDF (LibreOffice) ─────────────────────────────
 # این بخش از همین حالا آماده است؛ Dockerfile و requirements.txt با LibreOffice و
 # فونت‌ها آماده‌اند و برای فعال کردن آن نیازی به تغییر آن‌ها نیست.
