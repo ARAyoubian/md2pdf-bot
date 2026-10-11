@@ -13,6 +13,8 @@
     MAX_ZIP_BYTES          سقف حجم فایل ZIP (پیش‌فرض 20MB)
     MAX_ZIP_ENTRIES        سقف تعداد فایل قابل‌تبدیل در هر ZIP (پیش‌فرض 30)
     MAX_ZIP_UNCOMPRESSED   سقف مجموع حجم باز‌شدهٔ ZIP (پیش‌فرض 50MB)
+    MAX_DOCX_BYTES         سقف حجم فایل Word (پیش‌فرض 20MB)
+    MAX_DOCX_UNCOMPRESSED  سقف حجم باز‌شدهٔ فایل Word (پیش‌فرض 100MB)
     MAX_CONCURRENT         تعداد تبدیل همزمان (پیش‌فرض 1)
     CONVERSION_TIMEOUT     سقف زمان هر تبدیل بر حسب ثانیه (پیش‌فرض 120)
     JS_HEAP_MB             سقف حافظهٔ JS مرورگر (پیش‌فرض 192)
@@ -57,7 +59,7 @@ from telegram.ext import (
     filters,
 )
 
-BOT_VERSION = "r18-docx-output"
+BOT_VERSION = "r19-docx-to-pdf"
 
 logging.basicConfig(
     format="%(asctime)s %(levelname)s %(name)s: %(message)s", level=logging.INFO
@@ -82,6 +84,8 @@ SETTINGS_FILE = os.environ.get("SETTINGS_FILE", "user_settings.json")
 MAX_TEXT_BYTES = _env_int("MAX_TEXT_BYTES", 2 * 1024 * 1024)
 MAX_ZIP_BYTES = _env_int("MAX_ZIP_BYTES", 20 * 1024 * 1024)
 MAX_ZIP_ENTRIES = _env_int("MAX_ZIP_ENTRIES", 30)
+MAX_DOCX_BYTES = _env_int("MAX_DOCX_BYTES", 20 * 1024 * 1024)
+MAX_DOCX_UNCOMPRESSED = _env_int("MAX_DOCX_UNCOMPRESSED", 100 * 1024 * 1024)
 MAX_ZIP_UNCOMPRESSED = _env_int("MAX_ZIP_UNCOMPRESSED", 50 * 1024 * 1024)
 MAX_CONCURRENT = max(1, _env_int("MAX_CONCURRENT", 1))
 CONVERSION_TIMEOUT = _env_int("CONVERSION_TIMEOUT", 120)
@@ -2045,6 +2049,43 @@ async def handle_zip(update: Update, context: ContextTypes.DEFAULT_TYPE, zip_pat
         await message.reply_text("\n\n".join(lines)[:4000])
 
 
+def check_docx_archive(docx_path: str):
+    """فایل .docx در واقع ZIP است؛ قبل از LibreOffice ساختار و حجم باز‌شده‌اش بررسی می‌شود."""
+    if not zipfile.is_zipfile(docx_path):
+        raise ValueError("فایل Word معتبر نیست")
+    with zipfile.ZipFile(docx_path) as zf:
+        total = sum(info.file_size for info in zf.infolist())
+        if total > MAX_DOCX_UNCOMPRESSED:
+            raise ValueError("حجم باز‌شدهٔ فایل Word بیش از حد مجاز است")
+        if "word/document.xml" not in zf.namelist():
+            raise ValueError("ساختار فایل Word معتبر نیست")
+
+
+async def handle_docx(update: Update, context: ContextTypes.DEFAULT_TYPE, docx_path: str, tmpdir: str, filename: str):
+    message = update.message
+    file_title = clean_filename(os.path.splitext(filename or "")[0]) or f"Document_{message.message_id}"
+    status_msg = await message.reply_text(f"⏳ در حال تبدیل {file_title}.docx به PDF ...")
+    out_dir = os.path.join(tmpdir, "pdf")
+    os.makedirs(out_dir, exist_ok=True)
+    try:
+        await asyncio.to_thread(check_docx_archive, docx_path)
+        async with conversion_semaphore:
+            pdf_path = await asyncio.wait_for(
+                asyncio.to_thread(converters.docx_to_pdf, docx_path, out_dir, CONVERSION_TIMEOUT),
+                timeout=CONVERSION_TIMEOUT + 10,
+            )
+        await send_file(message, pdf_path, f"{file_title}.pdf")
+        await safe_delete(status_msg)
+    except (asyncio.TimeoutError, TimeoutError):
+        logger.warning("Word conversion timed out for %s", file_title)
+        await safe_edit(status_msg, f"❌ تبدیل {file_title} بیش از حد طول کشید و لغو شد.")
+    except ValueError as exc:
+        await safe_edit(status_msg, f"❌ {exc}")
+    except Exception as exc:
+        logger.exception("Word to PDF failed for %s", file_title)
+        await safe_edit(status_msg, f"❌ خطا در تبدیل {file_title}.docx به PDF." + error_detail(exc))
+
+
 async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not update.message or not update.message.document:
         return
@@ -2060,15 +2101,17 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
         kind = "text"
     elif lower.endswith(".zip"):
         kind = "zip"
+    elif lower.endswith(".docx"):
+        kind = "docx"
     elif not lower and mime in ("text/markdown", "text/x-markdown", "text/plain"):
         kind = "text"
     elif not lower and mime in ("application/zip", "application/x-zip-compressed"):
         kind = "zip"
     else:
-        await update.message.reply_text("⛔ لطفاً فقط فایل .md، .txt یا .zip بفرستید.")
+        await update.message.reply_text("⛔ لطفاً فقط فایل .md، .txt، .zip یا .docx بفرستید.")
         return
 
-    limit = MAX_ZIP_BYTES if kind == "zip" else MAX_TEXT_BYTES
+    limit = {"zip": MAX_ZIP_BYTES, "docx": MAX_DOCX_BYTES}.get(kind, MAX_TEXT_BYTES)
     if doc.file_size and doc.file_size > limit:
         await update.message.reply_text(
             f"⛔ حجم فایل بیش از حد مجاز است (حداکثر {limit // (1024 * 1024)} مگابایت)."
@@ -2091,7 +2134,9 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await update.message.reply_text("❌ دانلود فایل از تلگرام ناموفق بود.")
                 return
 
-            if kind == "zip":
+            if kind == "docx":
+                await handle_docx(update, context, local_path, tmpdir, filename)
+            elif kind == "zip":
                 await handle_zip(update, context, local_path, tmpdir)
             else:
                 with open(local_path, "rb") as f:
