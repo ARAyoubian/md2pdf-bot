@@ -55,7 +55,7 @@ from telegram.ext import (
     filters,
 )
 
-BOT_VERSION = "r15-full-page-paper"
+BOT_VERSION = "r17-toc-title-match"
 
 logging.basicConfig(
     format="%(asctime)s %(levelname)s %(name)s: %(message)s", level=logging.INFO
@@ -282,7 +282,7 @@ DOC_URL = "http://render.invalid/doc.html"
 ASSET_PREFIX = "http://render.invalid/assets/"
 
 HTML_TEMPLATE = r"""<!DOCTYPE html>
-<html dir="auto">
+<html dir="ltr">  <!-- ریشهٔ RTL در چاپ Chromium محتوا را ~۵mm به چپ می‌برد؛ جهت هر بلوک با dir=auto تعیین می‌شود -->
 <head>
     <meta charset="utf-8">
     <style>
@@ -1259,11 +1259,11 @@ def build_front_matter(title, date_text, headings, toc_pages):
         page = (toc_pages or {}).get(h["id"])
         num = to_persian_digits(page + 1) if page is not None else "–"
         rows.append(
-            f'<div class="toc-row toc-l{h["level"]}">'
+            f'<div class="toc-row toc-l{h["level"]}" dir="auto">'
             f'<a href="#{h["id"]}">{html.escape(h["text"])}</a>'
             f'<span class="toc-dots"></span><span class="toc-num">{num}</span></div>'
         )
-    toc = '<section class="toc"><div class="toc-title">فهرست مطالب</div>' + "".join(rows) + "</section>"
+    toc = '<section class="toc"><div class="toc-title" dir="rtl">فهرست مطالب</div>' + "".join(rows) + "</section>"
     return cover + toc
 
 
@@ -1289,15 +1289,28 @@ def read_outline(pdf_path):
     return items
 
 
+def _title_key(text):
+    """کلید مقایسهٔ عنوان؛ به ترتیب کلمات و علائم نگارشی حساس نیست.
+    (بعضی نسخه‌های Chromium عنوان bookmark را با ترتیب دیداری راست‌به‌چپ ذخیره می‌کنند.)"""
+    return tuple(sorted(re.sub(r"[^\w]+", " ", text or "").split()))
+
+
 def map_headings_to_pages(headings, outline):
     result, cursor = {}, 0
+    keys = [_title_key(title) for title, _ in outline]
     for h in headings:
+        want = _title_key(h["text"])
         for j in range(cursor, len(outline)):
-            title, page = outline[j]
-            if title == h["text"] and page is not None:
+            page = outline[j][1]
+            if keys[j] == want and page is not None:
                 result[h["id"]] = page
                 cursor = j + 1
                 break
+    if not result and outline and len(outline) == len(headings):
+        # اگر عنوان‌ها تطبیق نخوردند ولی تعدادشان برابر است، به ترتیب نگاشت می‌شوند
+        for h, (_, page) in zip(headings, outline):
+            if page is not None:
+                result[h["id"]] = page
     return result
 
 
