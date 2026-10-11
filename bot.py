@@ -59,7 +59,7 @@ from telegram.ext import (
     filters,
 )
 
-BOT_VERSION = "r19-docx-to-pdf"
+BOT_VERSION = "r20-static-fonts"
 
 logging.basicConfig(
     format="%(asctime)s %(levelname)s %(name)s: %(message)s", level=logging.INFO
@@ -129,7 +129,7 @@ _active_users = set()
 # این فایل‌ها هنگام build با `python bot.py --fetch-assets` دانلود می‌شوند و در زمان
 # رندر از روی دیسک سرو می‌شوند؛ مرورگر هیچ دسترسی اینترنتی ندارد.
 
-ASSETS_VERSION = "2"
+ASSETS_VERSION = "3"
 MATHJAX_URL = "https://registry.npmjs.org/mathjax/-/mathjax-3.2.2.tgz"
 MERMAID_URL = "https://registry.npmjs.org/mermaid/-/mermaid-11.4.1.tgz"
 VAZIRMATN_URL = "https://registry.npmjs.org/vazirmatn/-/vazirmatn-33.0.3.tgz"
@@ -194,6 +194,13 @@ def ensure_assets(force=False):
     ttf_pick = next((n for n in ttfs if "Variable" in n or "wght" in n), None) or next(iter(ttfs), None)
     if ttf_pick:
         _safe_write(ASSETS_DIR / "fonts", "Vazirmatn-Variable.ttf", ttfs[ttf_pick])
+        try:
+            static = converters.make_static_fonts(
+                str(ASSETS_DIR / "fonts" / "Vazirmatn-Variable.ttf"), str(ASSETS_DIR / "fonts")
+            )
+            logger.info("Static Vazirmatn fonts ready: %s", sorted(static))
+        except Exception:
+            logger.exception("Creating static Vazirmatn fonts failed; LibreOffice will use the variable font")
     else:
         logger.warning("Vazirmatn TTF not found in package; LibreOffice will substitute fonts")
 
