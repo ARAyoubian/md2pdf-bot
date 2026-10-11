@@ -42,6 +42,8 @@ from urllib.parse import unquote, urlparse
 
 import markdown
 import nh3
+
+import converters
 from playwright.async_api import async_playwright
 from pygments.formatters import HtmlFormatter
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
@@ -55,7 +57,7 @@ from telegram.ext import (
     filters,
 )
 
-BOT_VERSION = "r17-toc-title-match"
+BOT_VERSION = "r18-docx-output"
 
 logging.basicConfig(
     format="%(asctime)s %(levelname)s %(name)s: %(message)s", level=logging.INFO
@@ -123,7 +125,7 @@ _active_users = set()
 # این فایل‌ها هنگام build با `python bot.py --fetch-assets` دانلود می‌شوند و در زمان
 # رندر از روی دیسک سرو می‌شوند؛ مرورگر هیچ دسترسی اینترنتی ندارد.
 
-ASSETS_VERSION = "1"
+ASSETS_VERSION = "2"
 MATHJAX_URL = "https://registry.npmjs.org/mathjax/-/mathjax-3.2.2.tgz"
 MERMAID_URL = "https://registry.npmjs.org/mermaid/-/mermaid-11.4.1.tgz"
 VAZIRMATN_URL = "https://registry.npmjs.org/vazirmatn/-/vazirmatn-33.0.3.tgz"
@@ -170,15 +172,26 @@ def ensure_assets(force=False):
         _safe_write(ASSETS_DIR / "mermaid", "mermaid.min.js", tar.extractfile(member).read())
 
     # Vazirmatn (فونت متغیر)
-    fonts = {}
+    fonts, ttfs = {}, {}
     with tarfile.open(fileobj=io.BytesIO(_download(VAZIRMATN_URL)), mode="r:gz") as tar:
         for member in tar:
-            if member.isfile() and member.name.endswith(".woff2"):
+            if not member.isfile():
+                continue
+            if member.name.endswith(".woff2"):
                 fonts[member.name] = tar.extractfile(member).read()
+            elif member.name.endswith(".ttf") and "Vazirmatn" in member.name:
+                ttfs[member.name] = tar.extractfile(member).read()
     pick = next((n for n in fonts if "wght" in n or "variable" in n.lower()), None)
     if pick is None:
         raise RuntimeError(f"فونت متغیر Vazirmatn پیدا نشد. فایل‌ها: {list(fonts)}")
     _safe_write(ASSETS_DIR / "fonts", "Vazirmatn-Variable.woff2", fonts[pick])
+
+    # فونت TTF برای LibreOffice (تبدیل Word به PDF در آینده)
+    ttf_pick = next((n for n in ttfs if "Variable" in n or "wght" in n), None) or next(iter(ttfs), None)
+    if ttf_pick:
+        _safe_write(ASSETS_DIR / "fonts", "Vazirmatn-Variable.ttf", ttfs[ttf_pick])
+    else:
+        logger.warning("Vazirmatn TTF not found in package; LibreOffice will substitute fonts")
 
     required = [
         ASSETS_DIR / "mathjax" / "tex-chtml.js",
@@ -189,6 +202,10 @@ def ensure_assets(force=False):
     missing = [str(p) for p in required if not p.is_file()]
     if missing:
         raise RuntimeError(f"فایل‌های لازم دانلود نشدند: {missing}")
+    try:
+        converters.build_reference_docx(str(ASSETS_DIR / "reference.docx"))
+    except Exception:
+        logger.exception("Building reference.docx failed; DOCX will use pandoc's default style")
     marker.write_text(ASSETS_VERSION)
     logger.info("Assets ready.")
 
@@ -233,6 +250,10 @@ def get_user_setting(chat_id, key, default):
 def set_user_setting(chat_id, key, value):
     user_all_settings.setdefault(str(chat_id), {})[key] = value
     save_settings(user_all_settings)
+
+
+def get_output_format(chat_id):
+    return get_user_setting(chat_id, "output", "pdf")
 
 
 def get_conversion_settings(chat_id):
@@ -1723,6 +1744,32 @@ async def safe_delete(message):
         logger.debug("delete failed", exc_info=True)
 
 
+def prepare_markdown(md_text: str) -> str:
+    """پیش‌پردازش مشترک Markdown برای همهٔ خروجی‌ها (فرمول‌های escape‌شده و ...)."""
+    text = unescape_escaped_math(md_text)
+    text = normalize_display_math(text)
+    return auto_repair_latex(text)
+
+
+async def run_docx_conversion(md_text, out_path, title):
+    prepared = prepare_markdown(md_text)
+    reference = str(ASSETS_DIR / "reference.docx")
+    async with conversion_semaphore:
+        await asyncio.wait_for(
+            asyncio.to_thread(
+                converters.md_to_docx, prepared, out_path, title, reference, CONVERSION_TIMEOUT
+            ),
+            timeout=CONVERSION_TIMEOUT,
+        )
+
+
+async def send_file(message, path, filename):
+    if os.path.getsize(path) > TELEGRAM_UPLOAD_LIMIT:
+        raise ValueError("فایل بزرگ‌تر از حد مجاز ارسال تلگرام است")
+    with open(path, "rb") as fh:
+        await message.reply_document(document=fh, filename=filename, write_timeout=120)
+
+
 async def send_pdf(message, pdf_path, filename):
     if os.path.getsize(pdf_path) > TELEGRAM_UPLOAD_LIMIT:
         raise ValueError("PDF بزرگ‌تر از حد مجاز ارسال تلگرام است")
@@ -1757,6 +1804,7 @@ def get_settings_keyboard(chat_id):
     paper = get_user_setting(chat_id, "paper", True)
     front_btn = "📄 جلد و فهرست: روشن" if front else "📄 جلد و فهرست: خاموش"
     paper_btn = "🧾 پس‌زمینه کرم: روشن" if paper else "⬜ پس‌زمینه کرم: خاموش"
+    output_btn = "📤 خروجی: Word" if get_output_format(chat_id) == "docx" else "📤 خروجی: PDF"
 
     keyboard = [
         [
@@ -1777,6 +1825,7 @@ def get_settings_keyboard(chat_id):
             InlineKeyboardButton(front_btn, callback_data="toggle_front"),
             InlineKeyboardButton(paper_btn, callback_data="toggle_paper"),
         ],
+        [InlineKeyboardButton(output_btn, callback_data="toggle_output")],
     ]
     return InlineKeyboardMarkup(keyboard)
 
@@ -1850,6 +1899,9 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif data == "toggle_paper":
         current = get_user_setting(chat_id, "paper", True)
         set_user_setting(chat_id, "paper", not current)
+    elif data == "toggle_output":
+        current = get_output_format(chat_id)
+        set_user_setting(chat_id, "output", "pdf" if current == "docx" else "docx")
 
     await show_menu(update)
 
@@ -1857,16 +1909,23 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def process_conversion(update: Update, context: ContextTypes.DEFAULT_TYPE, md_text: str, file_default_name=None):
     message = update.message
     chat_id = update.effective_chat.id
+    output = get_output_format(chat_id)
+    settings = {**get_conversion_settings(chat_id), "title": None}
     file_title = clean_filename(file_default_name) or f"Note_{message.message_id}"
-    settings = {**get_conversion_settings(chat_id), "title": file_title}
+    settings["title"] = file_title
+    ext = "docx" if output == "docx" else "pdf"
 
-    status_msg = await message.reply_text(f"⏳ در حال تبدیل {file_title}.pdf ...")
+    status_msg = await message.reply_text(f"⏳ در حال تبدیل {file_title}.{ext} ...")
 
     with tempfile.TemporaryDirectory(prefix="md2pdf_") as tmpdir:
-        pdf_path = os.path.join(tmpdir, "out.pdf")
+        out_path = os.path.join(tmpdir, f"out.{ext}")
         try:
-            stats = await run_conversion(md_text, pdf_path, settings)
-            await send_pdf(message, pdf_path, f"{file_title}.pdf")
+            stats = None
+            if output == "docx":
+                await run_docx_conversion(md_text, out_path, file_title)
+            else:
+                stats = await run_conversion(md_text, out_path, settings)
+            await send_file(message, out_path, f"{file_title}.{ext}")
             await safe_delete(status_msg)
             warning = render_warnings(stats)
             if warning:
@@ -1930,6 +1989,8 @@ def read_zip_documents(zip_path):
 async def handle_zip(update: Update, context: ContextTypes.DEFAULT_TYPE, zip_path: str, tmpdir: str):
     message = update.message
     chat_id = update.effective_chat.id
+    output = get_output_format(chat_id)
+    ext = "docx" if output == "docx" else "pdf"
     settings = get_conversion_settings(chat_id)
 
     status_msg = await message.reply_text("📦 در حال خواندن فایل ZIP ...")
@@ -1950,14 +2011,17 @@ async def handle_zip(update: Update, context: ContextTypes.DEFAULT_TYPE, zip_pat
     failed = []
     warnings = []
     for idx, (title, text) in enumerate(docs, 1):
-        await safe_edit(status_msg, f"⏳ ({idx}/{len(docs)}) در حال تبدیل {title}.pdf ...")
-        pdf_path = os.path.join(tmpdir, f"zip_{idx}.pdf")
+        await safe_edit(status_msg, f"⏳ ({idx}/{len(docs)}) در حال تبدیل {title}.{ext} ...")
+        out_path = os.path.join(tmpdir, f"zip_{idx}.{ext}")
         try:
-            stats = await run_conversion(text, pdf_path, {**settings, "title": title})
-            await send_pdf(message, pdf_path, f"{title}.pdf")
-            warning = render_warnings(stats, title)
-            if warning:
-                warnings.append(warning)
+            if output == "docx":
+                await run_docx_conversion(text, out_path, title)
+            else:
+                stats = await run_conversion(text, out_path, {**settings, "title": title})
+                warning = render_warnings(stats, title)
+                if warning:
+                    warnings.append(warning)
+            await send_file(message, out_path, f"{title}.{ext}")
         except asyncio.TimeoutError:
             logger.warning("Conversion timed out for %s", title)
             failed.append(f"{title} (زمان تبدیل تمام شد)")
@@ -1966,7 +2030,7 @@ async def handle_zip(update: Update, context: ContextTypes.DEFAULT_TYPE, zip_pat
             failed.append(title + error_detail(exc))
         finally:
             with contextlib.suppress(OSError):
-                os.remove(pdf_path)
+                os.remove(out_path)
 
     await safe_delete(status_msg)
 
