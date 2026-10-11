@@ -14,6 +14,7 @@ RUN apt-get update \
       fontconfig \
       fonts-dejavu-core \
       fonts-liberation \
+      fonts-noto-core \
  && apt-get clean \
  && rm -rf /var/lib/apt/lists/*
 
@@ -31,8 +32,10 @@ RUN python bot.py --fetch-assets
 
 # نصب فونت فارسی برای LibreOffice (و کش فونت‌ها)
 RUN mkdir -p /usr/local/share/fonts/vazirmatn \
- && (cp /app/assets/fonts/Vazirmatn-Variable.ttf /usr/local/share/fonts/vazirmatn/ || echo "WARNING: Vazirmatn TTF missing") \
+ && (cp /app/assets/fonts/Vazirmatn-Regular.ttf /app/assets/fonts/Vazirmatn-Bold.ttf /usr/local/share/fonts/vazirmatn/ \
+     || echo "WARNING: static Vazirmatn fonts missing; LibreOffice will use fallback fonts") \
  && fc-cache -f || true
+RUN fc-match Vazirmatn || true
 
 RUN mkdir -p /data && chown -R pwuser:pwuser /app /data
 USER pwuser
