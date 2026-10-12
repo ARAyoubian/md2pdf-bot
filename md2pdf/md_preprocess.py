@@ -77,14 +77,15 @@ def normalize_display_math(md_text: str) -> str:
         return text
 
     def emit_block(content, ind):
+        # بلاک فرمول همیشه بدون تورفتگی می‌نشیند؛ تورفتگی داخل آیتم لیست باعث می‌شد MathJax آن را نبیند
         content = clean_inner(content)
         if not content:
             return
         if out and out[-1].strip():
             out.append("")
-        out.append(f"{ind}$$")
-        out.extend(f"{ind}{ln}" for ln in content.split("\n"))
-        out.append(f"{ind}$$")
+        out.append("$$")
+        out.extend(ln.strip() for ln in content.split("\n"))
+        out.append("$$")
         out.append("")
 
     def inline_repl(m):
