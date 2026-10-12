@@ -141,6 +141,7 @@ def md_to_docx(md_text: str, out_path: str, title: str = "", reference_doc: str 
     if result.returncode != 0 or not os.path.isfile(out_path):
         raise RuntimeError(f"pandoc failed: {result.stderr.decode('utf-8', 'replace')[:300]}")
     apply_docx_directions(out_path)
+    apply_docx_metadata(out_path, title)
     return out_path
 
 
@@ -206,6 +207,28 @@ def apply_docx_directions(docx_path: str) -> str:
             for cell in row.cells:
                 for paragraph in cell.paragraphs:
                     fix(paragraph)
+    doc.save(docx_path)
+    return docx_path
+
+
+BRAND_NAME = "Medoxin"
+CHANNEL_HANDLE = "@Med402"
+CHANNEL_URL = "https://t.me/Med402"
+
+
+def apply_docx_metadata(docx_path: str, title: str = "") -> str:
+    """خواص فایل Word (Author، Subject، ...) را روی برند کانال می‌گذارد."""
+    from docx import Document
+
+    doc = Document(docx_path)
+    props = doc.core_properties
+    props.title = title or ""
+    props.author = BRAND_NAME
+    props.last_modified_by = BRAND_NAME
+    props.subject = CHANNEL_HANDLE
+    props.keywords = f"{BRAND_NAME}, {CHANNEL_HANDLE}"
+    props.comments = CHANNEL_URL
+    props.category = "جزوه"
     doc.save(docx_path)
     return docx_path
 
