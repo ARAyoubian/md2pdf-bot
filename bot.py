@@ -60,7 +60,7 @@ from telegram.ext import (
     filters,
 )
 
-BOT_VERSION = "r26-two-modes"
+BOT_VERSION = "r30-neutral-gray"
 
 logging.basicConfig(
     format="%(asctime)s %(levelname)s %(name)s: %(message)s", level=logging.INFO
@@ -132,6 +132,11 @@ ALLOWED_USER_IDS = {
 TEXT_EXTENSIONS = (".md", ".markdown", ".txt")
 
 CODE_STYLE_LIGHT = HtmlFormatter(style="friendly").get_style_defs(".codehilite")
+CODE_STYLE_PRINT = HtmlFormatter(style="bw").get_style_defs(".codehilite")
+# ایموجی‌های رنگی (📌 ⚠️ 💡 🔥 ...) در چاپ سیاه‌وسفید باید خاکستری شوند
+EMOJI_RE = re.compile(
+    "(?:[\U0001F000-\U0001FAFF\u2600-\u27BF\u2300-\u23FF\u2B00-\u2BFF\u2190-\u21FF\u00A9\u00AE]\uFE0F?)+"
+)
 
 conversion_semaphore = asyncio.Semaphore(MAX_CONCURRENT)
 browser_lock = asyncio.Lock()
@@ -541,13 +546,25 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
         body.print-mode {
             --bg-code: #ffffff;
             --table-even: #ffffff;
-            --border-color: #9aa0a6;
+            --border-color: #999999;
             --note-bg: #ffffff; --warning-bg: #ffffff;
             --tip-bg: #ffffff; --important-bg: #ffffff;
+            --note-border: #555555; --warning-border: #111111;
+            --tip-border: #777777; --important-border: #000000;
+            --accent-color: #222222;
+            --text-main: #000000;
+            --text-muted: #555555;
         }
-        body.print-mode th { background-color: #eceff1; }
+        body.print-mode th { background-color: #eeeeee; }
+        body.print-mode .toc-dots { border-bottom-color: #888888; }
+        body.print-mode a { color: #000000; text-decoration: underline; }
+        body.print-mode .emo { filter: grayscale(100%); }
+        body.print-mode .cover-logo,
+        body.print-mode .mermaid-diagram,
+        body.print-mode .mermaid-diagram svg { filter: grayscale(100%); }
+        body.print-mode blockquote[class*="callout-"] > p:first-child > strong:first-child { color: #ffffff; }
         body.print-mode blockquote {
-            border: 1px solid #9aa0a6;
+            border: 1px solid #999999;
             border-inline-start: 4px solid #333333 !important;
         }
 
@@ -784,9 +801,9 @@ html, body { margin: 0; padding: 0; }
     direction: rtl;
     font-family: 'Vazirmatn', 'Noto Sans Arabic', sans-serif;
     font-size: 8.5pt;
-    color: #8c959f;
+    color: #777777;
 }
-.hd { position: absolute; top: 9mm; left: {{PAD}}; right: {{PAD}}; text-align: center; font-family: 'Vazirmatn', 'Noto Sans Arabic', sans-serif; font-size: 8pt; color: #8c959f; border-bottom: 0.4pt solid #d0d7de; padding-bottom: 2mm; }
+.hd { position: absolute; top: 9mm; left: {{PAD}}; right: {{PAD}}; text-align: center; font-family: 'Vazirmatn', 'Noto Sans Arabic', sans-serif; font-size: 8pt; color: #777777; border-bottom: 0.4pt solid #999999; padding-bottom: 2mm; }
 .ttl { max-width: 45%; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
 .brand { font-size: 7.5pt; letter-spacing: 0.3px; direction: ltr; }
 </style></head><body>{{PAGES}}</body></html>
@@ -1554,7 +1571,13 @@ def build_html(
         classes.append("print-mode")
     if not paper:
         classes.append("paper-off")
-    body_style = f"--accent-color: {ACCENTS.get(accent, ACCENTS['blue'])}"
+    if print_mode:
+        body = EMOJI_RE.sub(lambda m: f'<span class="emo">{m.group(0)}</span>', body)
+    body_style = (
+        "--accent-color: #222222"
+        if print_mode
+        else f"--accent-color: {ACCENTS.get(accent, ACCENTS['blue'])}"
+    )
 
     scripts = ""
     if has_math:
@@ -1567,7 +1590,7 @@ def build_html(
 
     # محتوا آخر از همه جایگذاری می‌شود تا متن کاربر هرگز با placeholder ها اشتباه گرفته نشود
     full_html = (
-        HTML_TEMPLATE.replace("/* PYGMENTS_INJECTION */", CODE_STYLE_LIGHT)
+        HTML_TEMPLATE.replace("/* PYGMENTS_INJECTION */", CODE_STYLE_PRINT if print_mode else CODE_STYLE_LIGHT)
         .replace("{{SCRIPTS}}", scripts)
         .replace("{{BODY_CLASSES}}", " ".join(classes))
         .replace("{{BODY_STYLE}}", body_style)
