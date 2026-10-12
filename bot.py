@@ -62,7 +62,7 @@ from telegram.ext import (
     filters,
 )
 
-BOT_VERSION = "r36b-callout-split"
+BOT_VERSION = "r37-fonts-h2"
 
 logging.basicConfig(
     format="%(asctime)s %(levelname)s %(name)s: %(message)s", level=logging.INFO
@@ -151,7 +151,7 @@ _active_users = set()
 # این فایل‌ها هنگام build با `python bot.py --fetch-assets` دانلود می‌شوند و در زمان
 # رندر از روی دیسک سرو می‌شوند؛ مرورگر هیچ دسترسی اینترنتی ندارد.
 
-ASSETS_VERSION = "3"
+ASSETS_VERSION = "4"
 MATHJAX_URL = "https://registry.npmjs.org/mathjax/-/mathjax-3.2.2.tgz"
 MERMAID_URL = "https://registry.npmjs.org/mermaid/-/mermaid-11.4.1.tgz"
 VAZIRMATN_URL = "https://registry.npmjs.org/vazirmatn/-/vazirmatn-33.0.3.tgz"
@@ -172,7 +172,18 @@ def _safe_write(root: Path, rel: str, data: bytes):
     dest.write_bytes(data)
 
 
+def persian_font_available() -> bool:
+    return (ASSETS_DIR / "fonts" / "BNazanin.ttf").is_file()
+
+
 def ensure_assets(force=False):
+    # فونت بی‌نازنین (اگر کنار bot.py گذاشته شده باشد) به پوشهٔ assets کپی می‌شود
+    ASSETS_DIR.mkdir(parents=True, exist_ok=True)
+    (ASSETS_DIR / "fonts").mkdir(parents=True, exist_ok=True)
+    for name in ("BNazanin.ttf", "BNazanin-Bold.ttf"):
+        src = BASE_DIR / "bnazanin" / name
+        if src.is_file():
+            (ASSETS_DIR / "fonts" / name).write_bytes(src.read_bytes())
     marker = ASSETS_DIR / ".ready"
     if not force and marker.exists() and marker.read_text().strip() == ASSETS_VERSION:
         return
@@ -298,6 +309,7 @@ def get_conversion_settings(chat_id):
         "font_size": get_user_setting(chat_id, "font_size", "normal"),
         "print_mode": get_user_setting(chat_id, "print_mode", False),
         "accent": get_user_setting(chat_id, "accent", "blue"),
+        "persian_font": get_user_setting(chat_id, "persian_font", "vazir"),
         "front": get_user_setting(chat_id, "front", True),
         "paper": get_user_setting(chat_id, "paper", True),
     }
@@ -343,6 +355,19 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
             font-family: 'Vazirmatn';
             src: url('/assets/fonts/Vazirmatn-Variable.woff2') format('woff2');
             font-weight: 100 900;
+            font-display: block;
+        }
+
+        @font-face {
+            font-family: 'BNazanin';
+            src: url('/assets/fonts/BNazanin.ttf') format('truetype');
+            font-weight: 400;
+            font-display: block;
+        }
+        @font-face {
+            font-family: 'BNazanin';
+            src: url('/assets/fonts/BNazanin-Bold.ttf') format('truetype');
+            font-weight: 700;
             font-display: block;
         }
 
@@ -685,15 +710,13 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
         .hm { font-size: 1px; color: #ffffff; }
 
         /* ───── r36: جداکننده بین مباحث بزرگ ───── */
-        h2 { border-bottom: none; padding-bottom: 0; }
-        h2::after {
-            content: "";
-            display: block;
-            width: 48px;
-            height: 3px;
-            margin-top: 6px;
-            background: var(--accent-color);
-            border-radius: 2px;
+        h2 {
+            border-bottom: none;
+            padding-bottom: 6px;
+            background-image: linear-gradient(var(--accent-color), var(--accent-color));
+            background-repeat: no-repeat;
+            background-size: 48px 3px;
+            background-position: right bottom;
         }
 
         /* ───── r36: انواع callout جدید ───── */
@@ -722,6 +745,12 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
             color: var(--accent-color);
         }
         body.print-mode tbody td:first-child { color: #000000; }
+
+        /* ───── فونت فارسی: وزیرمتن یا بی‌نازنین ───── */
+        body.font-bnazanin { font-family: 'BNazanin', 'Vazirmatn', 'Noto Sans Arabic', sans-serif; }
+
+        /* ───── انگلیسی همیشه Arial (در لینوکس: Liberation Sans با متریک یکسان) ───── */
+        .en { font-family: Arial, 'Liberation Sans', Arimo, Helvetica, sans-serif; }
 
         /* PYGMENTS_INJECTION */
     </style>
@@ -1641,6 +1670,45 @@ def build_page_meta(total, front_info):
     return meta
 
 
+_LATIN_RUN_RE = re.compile(r"[A-Za-z][A-Za-z0-9 .,:;'\u2019&/+\-()]*")
+_SKIP_TAGS = ("pre", "code", "script", "style", "textarea")
+_VOID_TAGS = ("br", "img", "hr", "meta", "input", "col", "wbr", "link")
+_TAG_NAME_RE = re.compile(r"<\s*(/?)\s*([a-zA-Z0-9]+)([^>]*)>")
+
+
+def apply_latin_spans(html_text: str) -> str:
+    """
+    متن لاتین را در <span class="en" dir="ltr"> می‌گذارد تا با Arial نمایش داده شود.
+    داخل تگ‌ها، کد، پیش‌نمایش ریاضی (arithmatex) و mermaid دست‌نخورده می‌ماند.
+    """
+    parts = re.split(r"(<[^>]+>)", html_text)
+    stack = []  # برای هر تگ باز: True اگر داخل محدوده‌ی بدون تغییر است
+    skip_depth = 0
+    out = []
+    for part in parts:
+        if part.startswith("<"):
+            match = _TAG_NAME_RE.match(part)
+            if match and not part.startswith("<!"):
+                closing, name, attrs = match.group(1), match.group(2).lower(), match.group(3)
+                if closing:
+                    if stack:
+                        was_skip = stack.pop()
+                        if was_skip:
+                            skip_depth -= 1
+                elif name not in _VOID_TAGS and not attrs.rstrip().endswith("/"):
+                    is_skip = name in _SKIP_TAGS or "arithmatex" in attrs or 'class="mermaid"' in attrs
+                    stack.append(is_skip)
+                    if is_skip:
+                        skip_depth += 1
+            out.append(part)
+            continue
+        if skip_depth:
+            out.append(part)
+        else:
+            out.append(_LATIN_RUN_RE.sub(lambda m: f'<span class="en" dir="ltr">{m.group(0)}</span>', part))
+    return "".join(out)
+
+
 def build_html(
     md_text,
     orientation="portrait",
@@ -1656,8 +1724,9 @@ def build_html(
     toc_pages=None,
     date_text="",
     mark_headings=False,
+    persian_font="vazir",
 ):
-    """Markdown → HTML کامل. خروجی: (html, has_math, has_mermaid)"""
+    """Markdown → HTML کامل. خروجی: (html, has_math, has_mermaid, headings)"""
     # نمودارهای mermaid قبل از هر پردازش دیگری جدا می‌شوند و بعد از پاک‌سازی HTML برمی‌گردند
     token = "MMD" + secrets.token_hex(8) + "X"
     mermaid_blocks = []
@@ -1723,7 +1792,10 @@ def build_html(
             title, date_text, headings, toc_pages, doc_title=doc_title, logo_uri=_logo_data_uri()
         ) + body
 
+    body = apply_latin_spans(body)
     classes = []
+    if persian_font == "bnazanin" and persian_font_available():
+        classes.append("font-bnazanin")
     if compact:
         classes.append("compact-mode")
     if orientation == "landscape":
@@ -1827,6 +1899,8 @@ _ASSET_MIME = {
     ".js": "text/javascript",
     ".woff2": "font/woff2",
     ".woff": "font/woff",
+    ".ttf": "font/ttf",
+    ".otf": "font/otf",
 }
 
 
@@ -1915,6 +1989,7 @@ async def generate_pdf_output(
     accent="blue",
     front=False,
     paper=True,
+    persian_font="vazir",
 ):
     page_format = page_format or PDF_PAGE_FORMAT
     page_margin = "12mm" if compact else "20mm"
@@ -1930,6 +2005,7 @@ async def generate_pdf_output(
         title=title,
         front=front,
         date_text=persian_date_text() if front else "",
+        persian_font=persian_font,
     )
 
     browser = await ensure_browser()
@@ -2119,6 +2195,13 @@ def get_settings_keyboard(chat_id):
     front_btn = "📄 جلد و فهرست: روشن" if front else "📄 جلد و فهرست: خاموش"
     paper_btn = "🧾 پس‌زمینه کرم: روشن" if paper else "⬜ پس‌زمینه کرم: خاموش"
     output_btn = "📤 خروجی: Word" if get_output_format(chat_id) == "docx" else "📤 خروجی: PDF"
+    persian_font = get_user_setting(chat_id, "persian_font", "vazir")
+    if not persian_font_available():
+        font_btn_text = "🔤 فونت فارسی: وزیرمتن (بی‌نازنین نصب نیست)"
+    elif persian_font == "bnazanin":
+        font_btn_text = "🔤 فونت فارسی: بی‌نازنین"
+    else:
+        font_btn_text = "🔤 فونت فارسی: وزیرمتن"
 
     keyboard = [
         [
@@ -2137,6 +2220,7 @@ def get_settings_keyboard(chat_id):
             InlineKeyboardButton(paper_btn, callback_data="toggle_paper"),
         ],
         [InlineKeyboardButton(output_btn, callback_data="toggle_output")],
+        [InlineKeyboardButton(font_btn_text, callback_data="cycle_pfont")],
     ]
     return InlineKeyboardMarkup(keyboard)
 
@@ -2206,6 +2290,9 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif data == "toggle_paper":
         current = get_user_setting(chat_id, "paper", True)
         set_user_setting(chat_id, "paper", not current)
+    elif data == "cycle_pfont":
+        current = get_user_setting(chat_id, "persian_font", "vazir")
+        set_user_setting(chat_id, "persian_font", "vazir" if current == "bnazanin" else "bnazanin")
     elif data == "toggle_output":
         current = get_output_format(chat_id)
         set_user_setting(chat_id, "output", "pdf" if current == "docx" else "docx")
@@ -2501,6 +2588,7 @@ async def selftest(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "mermaid": (ASSETS_DIR / "mermaid" / "mermaid.min.js").is_file(),
         "font": (ASSETS_DIR / "fonts" / "Vazirmatn-Variable.woff2").is_file(),
         "pypdf": _pypdf_version(),
+        "bnazanin": persian_font_available(),
     }
     status = await update.message.reply_text("🧪 در حال آزمایش ...")
     with tempfile.TemporaryDirectory(prefix="md2pdf_self_") as tmpdir:
