@@ -300,3 +300,43 @@ def prepare_markdown(md_text: str) -> str:
     text = unescape_escaped_math(md_text)
     text = normalize_display_math(text)
     return auto_repair_latex(text)
+
+
+
+
+_PLACEHOLDER_LINE_RE = re.compile(r"^\s*>\s*(?:🖼\ufe0f?\s*)?\[(IMG-\d+)\](.*)$", re.IGNORECASE)
+
+
+def inject_images(md_text: str, images: dict):
+    """
+    خط‌های جای‌نگهدار مثل `> 🖼️ [IMG-01] | اسلاید ۱۴ | کپشن` را با عکس واقعی جایگزین می‌کند.
+    images: {"IMG-01": (mime, bytes)}؛ عکس به‌صورت data URI داخل Markdown قرار می‌گیرد.
+    خروجی: (متن جدید، فهرست شناسه‌های پیدا‌نشده)
+    """
+    import base64
+
+    missing = []
+    out = []
+    for line in md_text.split("\n"):
+        match = _PLACEHOLDER_LINE_RE.match(line)
+        if not match:
+            out.append(line)
+            continue
+        ident = match.group(1).upper()
+        if ident not in images:
+            missing.append(ident)
+            out.append(line)
+            continue
+        parts = [part.strip() for part in match.group(2).split("|")]
+        caption = parts[-1] if len(parts) > 1 else ""
+        caption = caption.replace("[", "(").replace("]", ")")
+        mime, data = images[ident]
+        uri = f"data:{mime};base64," + base64.b64encode(data).decode("ascii")
+        out.append("")
+        out.append(f"![{caption}]({uri})")
+        if caption:
+            out.append("")
+            out.append(f"*{caption}*")
+        out.append("")
+    return "\n".join(out), missing
+
