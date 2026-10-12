@@ -102,12 +102,74 @@ def md_to_docx(md_text: str, out_path: str, title: str = "", reference_doc: str 
     )
     if result.returncode != 0 or not os.path.isfile(out_path):
         raise RuntimeError(f"pandoc failed: {result.stderr.decode('utf-8', 'replace')[:300]}")
+    apply_docx_directions(out_path)
     return out_path
 
 
 # ───────────────────────────── قالب Word فارسی ─────────────────────────────
 
 FARSI_FONT = "Vazirmatn"
+
+
+def _insert_ordered(parent, element, successors):
+    """عنصر را در جایگاه درست طبق ترتیب شِمای OOXML درج می‌کند (Word نسبت به ترتیب سخت‌گیر است)."""
+    from docx.oxml.ns import qn
+
+    for tag in successors:
+        found = parent.find(qn(tag))
+        if found is not None:
+            found.addprevious(element)
+            return element
+    parent.append(element)
+    return element
+
+
+PPR_BIDI_SUCCESSORS = (
+    "w:adjustRightInd", "w:snapToGrid", "w:spacing", "w:ind", "w:contextualSpacing",
+    "w:mirrorIndents", "w:suppressOverlap", "w:jc", "w:textDirection", "w:textAlignment",
+    "w:textboxTightWrap", "w:outlineLvl", "w:divId", "w:cnfStyle", "w:rPr", "w:sectPr", "w:pPrChange",
+)
+RPR_RTL_SUCCESSORS = ("w:cs", "w:em", "w:lang", "w:eastAsianLayout", "w:specVanish", "w:oMath")
+SECT_BIDI_SUCCESSORS = ("w:rtlGutter", "w:docGrid", "w:printerSettings", "w:sectPrChange")
+PERSIAN_CHAR_RE = re.compile(r"[\u0600-\u06FF\u0750-\u077F\uFB50-\uFDFF\uFE70-\uFEFF]")
+LATIN_LETTER_RE = re.compile(r"[A-Za-z]")
+
+
+def _docx_text_direction(text):
+    """همان قاعده‌ای که در PDF اعمال می‌شود: فارسی در متن → راست‌به‌چپ، فقط لاتین → چپ‌به‌راست."""
+    if PERSIAN_CHAR_RE.search(text or ""):
+        return "rtl"
+    if LATIN_LETTER_RE.search(text or ""):
+        return "ltr"
+    return "rtl"
+
+
+def apply_docx_directions(docx_path: str) -> str:
+    """برای هر پاراگراف جهت را بر اساس متنش تنظیم می‌کند (شامل خانه‌های جدول)."""
+    from docx import Document
+    from docx.oxml import OxmlElement
+    from docx.oxml.ns import qn
+
+    doc = Document(docx_path)
+
+    def fix(paragraph):
+        ppr = paragraph._p.get_or_add_pPr()
+        bidi = ppr.find(qn("w:bidi"))
+        want_rtl = _docx_text_direction(paragraph.text) == "rtl"
+        if want_rtl and bidi is None:
+            _insert_ordered(ppr, OxmlElement("w:bidi"), PPR_BIDI_SUCCESSORS)
+        elif not want_rtl and bidi is not None:
+            ppr.remove(bidi)
+
+    for paragraph in doc.paragraphs:
+        fix(paragraph)
+    for table in doc.tables:
+        for row in table.rows:
+            for cell in row.cells:
+                for paragraph in cell.paragraphs:
+                    fix(paragraph)
+    doc.save(docx_path)
+    return docx_path
 
 
 def build_reference_docx(out_path: str, font_name: str = FARSI_FONT) -> str:
@@ -145,19 +207,19 @@ def build_reference_docx(out_path: str, font_name: str = FARSI_FONT) -> str:
             if style.type == WD_STYLE_TYPE.PARAGRAPH:
                 ppr = element.get_or_add_pPr()
                 if ppr.find(qn("w:bidi")) is None:
-                    ppr.append(OxmlElement("w:bidi"))
+                    _insert_ordered(ppr, OxmlElement("w:bidi"), PPR_BIDI_SUCCESSORS)
             if style.type in (WD_STYLE_TYPE.PARAGRAPH, WD_STYLE_TYPE.CHARACTER):
                 rpr = element.get_or_add_rPr()
                 set_fonts(rpr)
                 if rpr.find(qn("w:rtl")) is None:
-                    rpr.append(OxmlElement("w:rtl"))
+                    _insert_ordered(rpr, OxmlElement("w:rtl"), RPR_RTL_SUCCESSORS)
         except Exception:
             continue
 
     for section in doc.sections:
         sectpr = section._sectPr
         if sectpr.find(qn("w:bidi")) is None:
-            sectpr.append(OxmlElement("w:bidi"))
+            _insert_ordered(sectpr, OxmlElement("w:bidi"), SECT_BIDI_SUCCESSORS)
 
     doc.save(out_path)
     try:
