@@ -60,7 +60,7 @@ from telegram.ext import (
     filters,
 )
 
-BOT_VERSION = "r32-markers-logo"
+BOT_VERSION = "r33-heading-fallback"
 
 logging.basicConfig(
     format="%(asctime)s %(levelname)s %(name)s: %(message)s", level=logging.INFO
@@ -1850,6 +1850,7 @@ async def generate_pdf_output(
         )
 
         front_info = None
+        heading_diag = None
         if front and headings:
             # مرحلهٔ اول: پیدا کردن صفحهٔ هر عنوان از روی bookmark ها
             pass1 = output_pdf_path + ".pass1.pdf"
@@ -1858,15 +1859,32 @@ async def generate_pdf_output(
             try:
                 marker_pages = await asyncio.to_thread(find_marker_pages, pass1)
             except Exception:
-                logger.exception("Reading heading markers failed; TOC page numbers will be missing")
+                logger.exception("Reading heading markers failed")
                 marker_pages = {}
+            try:
+                outline = await asyncio.to_thread(read_outline, pass1)
+            except Exception:
+                logger.exception("Reading PDF outline failed")
+                outline = []
             finally:
                 with contextlib.suppress(OSError):
                     os.remove(pass1)
 
-            heading_pages = {
-                h["id"]: marker_pages[i] for i, h in enumerate(headings) if i in marker_pages
+            # اولویت با نشانه‌ها؛ برای عنوان‌هایی که پیدا نشدند، از bookmark ها استفاده می‌شود
+            outline_pages = map_headings_to_pages(headings, outline)
+            heading_pages = {}
+            for i, h in enumerate(headings):
+                if i in marker_pages:
+                    heading_pages[h["id"]] = marker_pages[i]
+                elif h["id"] in outline_pages:
+                    heading_pages[h["id"]] = outline_pages[h["id"]]
+            heading_diag = {
+                "headings": len(headings),
+                "markers": len(marker_pages),
+                "outline_items": len(outline),
+                "mapped": len(heading_pages),
             }
+            logger.info("heading mapping: %s", heading_diag)
             # مرحلهٔ دوم: فهرست با شماره‌صفحه
             full_html, has_math, has_mermaid, headings = await asyncio.to_thread(
                 build_html, md_text, toc_pages=heading_pages, **build_kw
@@ -1889,6 +1907,7 @@ async def generate_pdf_output(
         except Exception:
             logger.exception("Setting PDF metadata failed")
         stats["front_matter"] = bool(front_info)
+        stats["heading_diag"] = heading_diag
         stats["paper_bg"] = bool(paper and not print_mode)
         logger.info("footer=%s bookmarks=%s->%s front=%s", footer_status,
                     bookmarks_before, stats["bookmarks"], bool(front_info))
@@ -2361,6 +2380,8 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 SELFTEST_MD = r"""# عنوان آزمایشی
 
+# فصل اول آزمایشی
+
 ## بخش اول
 
 فرمول محاسبه: $$INR = \left(\frac{\text{PT}_{\text{Patient}}}{\text{MNPT}}\right)^{ISI}$$
@@ -2368,6 +2389,15 @@ SELFTEST_MD = r"""# عنوان آزمایشی
 - $\text{MNPT}$: آزمون
 - $ISI$: آزمون
 """
+
+
+def _pypdf_version():
+    try:
+        import pypdf
+
+        return getattr(pypdf, "__version__", "installed")
+    except Exception:
+        return None
 
 
 async def selftest(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -2378,7 +2408,7 @@ async def selftest(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "mathjax": (ASSETS_DIR / "mathjax" / "tex-chtml.js").is_file(),
         "mermaid": (ASSETS_DIR / "mermaid" / "mermaid.min.js").is_file(),
         "font": (ASSETS_DIR / "fonts" / "Vazirmatn-Variable.woff2").is_file(),
-        "pypdf": importlib.util.find_spec("pypdf") is not None,
+        "pypdf": _pypdf_version(),
     }
     status = await update.message.reply_text("🧪 در حال آزمایش ...")
     with tempfile.TemporaryDirectory(prefix="md2pdf_self_") as tmpdir:
