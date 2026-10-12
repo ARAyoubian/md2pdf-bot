@@ -65,7 +65,7 @@ from telegram.ext import (
     filters,
 )
 
-BOT_VERSION = "r38-selftest-richer"
+BOT_VERSION = "r41-vazirmatn-stack"
 
 logging.basicConfig(
     format="%(asctime)s %(levelname)s %(name)s: %(message)s", level=logging.INFO
@@ -175,18 +175,7 @@ def _safe_write(root: Path, rel: str, data: bytes):
     dest.write_bytes(data)
 
 
-def persian_font_available() -> bool:
-    return (ASSETS_DIR / "fonts" / "BNazanin.ttf").is_file()
-
-
 def ensure_assets(force=False):
-    # فونت بی‌نازنین (اگر کنار bot.py گذاشته شده باشد) به پوشهٔ assets کپی می‌شود
-    ASSETS_DIR.mkdir(parents=True, exist_ok=True)
-    (ASSETS_DIR / "fonts").mkdir(parents=True, exist_ok=True)
-    for name in ("BNazanin.ttf", "BNazanin-Bold.ttf"):
-        src = BASE_DIR / "bnazanin" / name
-        if src.is_file():
-            (ASSETS_DIR / "fonts" / name).write_bytes(src.read_bytes())
     marker = ASSETS_DIR / ".ready"
     if not force and marker.exists() and marker.read_text().strip() == ASSETS_VERSION:
         return
@@ -312,7 +301,6 @@ def get_conversion_settings(chat_id):
         "font_size": get_user_setting(chat_id, "font_size", "normal"),
         "print_mode": get_user_setting(chat_id, "print_mode", False),
         "accent": get_user_setting(chat_id, "accent", "blue"),
-        "persian_font": get_user_setting(chat_id, "persian_font", "vazir"),
         "front": get_user_setting(chat_id, "front", True),
         "paper": get_user_setting(chat_id, "paper", True),
     }
@@ -355,24 +343,12 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
     <meta charset="utf-8">
     <style>
         @font-face {
-            font-family: 'Vazirmatn';
+            font-family: 'VazirmatnWeb';
             src: url('/assets/fonts/Vazirmatn-Variable.woff2') format('woff2');
             font-weight: 100 900;
             font-display: block;
         }
 
-        @font-face {
-            font-family: 'BNazanin';
-            src: url('/assets/fonts/BNazanin.ttf') format('truetype');
-            font-weight: 400;
-            font-display: block;
-        }
-        @font-face {
-            font-family: 'BNazanin';
-            src: url('/assets/fonts/BNazanin-Bold.ttf') format('truetype');
-            font-weight: 700;
-            font-display: block;
-        }
 
         :root {
             --bg-body: #ffffff;
@@ -391,7 +367,7 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
 
         body {
             background-color: var(--bg-body);
-            font-family: 'Vazirmatn', 'Noto Sans Arabic', 'Segoe UI', Roboto, sans-serif;
+            font-family: 'VazirmatnWeb', 'Vazirmatn', 'Noto Sans Arabic', 'Segoe UI', Roboto, sans-serif;
             color: var(--text-main);
             line-height: 1.7;
             padding: 0;
@@ -749,9 +725,6 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
         }
         body.print-mode tbody td:first-child { color: #000000; }
 
-        /* ───── فونت فارسی: وزیرمتن یا بی‌نازنین ───── */
-        body.font-bnazanin { font-family: 'BNazanin', 'Vazirmatn', 'Noto Sans Arabic', sans-serif; }
-
         /* ───── انگلیسی همیشه Arial (در لینوکس: Liberation Sans با متریک یکسان) ───── */
         .en { font-family: Arial, 'Liberation Sans', Arimo, Helvetica, sans-serif; unicode-bidi: isolate; }
 
@@ -862,6 +835,7 @@ RENDER_STATS_JS = r"""
         mermaid: document.querySelectorAll('.mermaid-diagram').length,
         mermaid_failed: document.querySelectorAll('pre.mermaid').length,
         dollars: (document.body.innerText.match(/\$/g) || []).length,
+        font_faces: Array.from(document.fonts).map((f) => f.family + ' ' + f.weight + ': ' + f.status),
         math_error_count: errors.length,
         math_errors: errors.slice(0, 20),
     };
@@ -882,7 +856,7 @@ _PERSIAN_DIGITS = str.maketrans("0123456789", "۰۱۲۳۴۵۶۷۸۹")
 FOOTER_OVERLAY_TEMPLATE = r"""<!DOCTYPE html>
 <html><head><meta charset="utf-8"><style>
 @font-face {
-    font-family: 'Vazirmatn';
+    font-family: 'VazirmatnWeb';
     src: url('/assets/fonts/Vazirmatn-Variable.woff2') format('woff2');
     font-weight: 100 900;
     font-display: block;
@@ -907,11 +881,11 @@ html, body { margin: 0; padding: 0; }
     justify-content: space-between;
     align-items: baseline;
     direction: rtl;
-    font-family: 'Vazirmatn', 'Noto Sans Arabic', sans-serif;
+    font-family: 'VazirmatnWeb', 'Vazirmatn', 'Noto Sans Arabic', sans-serif;
     font-size: 8.5pt;
     color: #777777;
 }
-.hd { position: absolute; top: 9mm; left: {{PAD}}; right: {{PAD}}; text-align: center; font-family: 'Vazirmatn', 'Noto Sans Arabic', sans-serif; font-size: 8pt; color: #777777; border-bottom: 0.2pt solid #b0b0b0; padding-bottom: 2mm; }
+.hd { position: absolute; top: 9mm; left: {{PAD}}; right: {{PAD}}; text-align: center; font-family: 'VazirmatnWeb', 'Vazirmatn', 'Noto Sans Arabic', sans-serif; font-size: 8pt; color: #777777; border-bottom: 0.2pt solid #b0b0b0; padding-bottom: 2mm; }
 .ttl { max-width: 45%; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
 .brand { font-size: 7.5pt; letter-spacing: 0.3px; direction: ltr; }
 </style></head><body>{{PAGES}}</body></html>
@@ -1731,7 +1705,6 @@ def build_html(
     toc_pages=None,
     date_text="",
     mark_headings=False,
-    persian_font="vazir",
 ):
     """Markdown → HTML کامل. خروجی: (html, has_math, has_mermaid, headings)"""
     # نمودارهای mermaid قبل از هر پردازش دیگری جدا می‌شوند و بعد از پاک‌سازی HTML برمی‌گردند
@@ -1801,8 +1774,6 @@ def build_html(
 
     body = apply_latin_spans(body)
     classes = []
-    if persian_font == "bnazanin" and persian_font_available():
-        classes.append("font-bnazanin")
     if compact:
         classes.append("compact-mode")
     if orientation == "landscape":
@@ -1996,7 +1967,6 @@ async def generate_pdf_output(
     accent="blue",
     front=False,
     paper=True,
-    persian_font="vazir",
 ):
     page_format = page_format or PDF_PAGE_FORMAT
     page_margin = "12mm" if compact else "20mm"
@@ -2012,7 +1982,6 @@ async def generate_pdf_output(
         title=title,
         front=front,
         date_text=persian_date_text() if front else "",
-        persian_font=persian_font,
     )
 
     browser = await ensure_browser()
@@ -2202,13 +2171,6 @@ def get_settings_keyboard(chat_id):
     front_btn = "📄 جلد و فهرست: روشن" if front else "📄 جلد و فهرست: خاموش"
     paper_btn = "🧾 پس‌زمینه کرم: روشن" if paper else "⬜ پس‌زمینه کرم: خاموش"
     output_btn = "📤 خروجی: Word" if get_output_format(chat_id) == "docx" else "📤 خروجی: PDF"
-    persian_font = get_user_setting(chat_id, "persian_font", "vazir")
-    if not persian_font_available():
-        font_btn_text = "🔤 فونت فارسی: وزیرمتن (بی‌نازنین نصب نیست)"
-    elif persian_font == "bnazanin":
-        font_btn_text = "🔤 فونت فارسی: بی‌نازنین"
-    else:
-        font_btn_text = "🔤 فونت فارسی: وزیرمتن"
 
     keyboard = [
         [
@@ -2227,7 +2189,6 @@ def get_settings_keyboard(chat_id):
             InlineKeyboardButton(paper_btn, callback_data="toggle_paper"),
         ],
         [InlineKeyboardButton(output_btn, callback_data="toggle_output")],
-        [InlineKeyboardButton(font_btn_text, callback_data="cycle_pfont")],
     ]
     return InlineKeyboardMarkup(keyboard)
 
@@ -2297,9 +2258,6 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif data == "toggle_paper":
         current = get_user_setting(chat_id, "paper", True)
         set_user_setting(chat_id, "paper", not current)
-    elif data == "cycle_pfont":
-        current = get_user_setting(chat_id, "persian_font", "vazir")
-        set_user_setting(chat_id, "persian_font", "vazir" if current == "bnazanin" else "bnazanin")
     elif data == "toggle_output":
         current = get_output_format(chat_id)
         set_user_setting(chat_id, "output", "pdf" if current == "docx" else "docx")
@@ -2650,7 +2608,25 @@ def _inspect_pdf(pdf_path: str, chapter_text: str) -> dict:
     }
 
 
-def _env_report(persian_choice: str, chromium_version: str) -> dict:
+def font_files_info() -> dict:
+    """حجم و نام داخلی فایل‌های فونت در assets (برای تشخیص فایل خراب)."""
+    result = {}
+    folder = ASSETS_DIR / "fonts"
+    names = sorted(os.listdir(folder)) if folder.is_dir() else []
+    for name in names:
+        path = folder / name
+        try:
+            from fontTools.ttLib import TTFont
+
+            font = TTFont(str(path), lazy=True)
+            family = font["name"].getDebugName(1) or "?"
+            result[name] = f"{path.stat().st_size} bytes, family={family}"
+        except Exception as exc:
+            result[name] = f"{path.stat().st_size} bytes, خطا: {type(exc).__name__}"
+    return result
+
+
+def _env_report(chromium_version: str) -> dict:
     def fc(name):
         try:
             out = subprocess.run(["fc-match", name], capture_output=True, text=True, timeout=5).stdout.strip()
@@ -2664,10 +2640,7 @@ def _env_report(persian_choice: str, chromium_version: str) -> dict:
     except Exception:
         pandoc = False
     return {
-        "persian_choice": persian_choice,
-        "bnazanin_file": persian_font_available(),
         "fc_Vazirmatn": fc("Vazirmatn"),
-        "fc_BNazanin": fc("BNazanin"),
         "fc_Arial": fc("Arial"),
         "chromium": chromium_version,
         "libreoffice": shutil.which("soffice") is not None,
@@ -2676,6 +2649,7 @@ def _env_report(persian_choice: str, chromium_version: str) -> dict:
         "mathjax_asset": (ASSETS_DIR / "mathjax" / "tex-chtml.js").is_file(),
         "mermaid_asset": (ASSETS_DIR / "mermaid" / "mermaid.min.js").is_file(),
         "vazir_ttf_static": (ASSETS_DIR / "fonts" / "Vazirmatn-Regular.ttf").is_file(),
+        "fonts_in_assets": font_files_info(),
     }
 
 
@@ -2719,104 +2693,10 @@ async def selftest(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     chat_id = update.effective_chat.id
     settings = get_conversion_settings(chat_id)
-    persian_choice = settings.get("persian_font", "vazir")
     status = await update.message.reply_text("🧪 در حال آزمایش ...")
 
     try:
         browser = await ensure_browser()
         chromium_version = browser.version
     except Exception as exc:
-        chromium_version = f"خطا: {type(exc).__name__}"
-    env = _env_report(persian_choice, chromium_version)
-    lines = [f"🔖 نسخه: {BOT_VERSION}", "", "🖥 محیط:"]
-    lines += [f"  {k}: {v}" for k, v in env.items()]
-    lines.append("")
-    lines.append("🔤 فونت لاتین (Latin spans):")
-    lines += [f"  {k}: {v}" for k, v in _latin_report().items()]
-
-    chapter = "فصل اول آزمایشی"
-    with tempfile.TemporaryDirectory(prefix="md2pdf_self_") as tmpdir:
-        pdf_path = os.path.join(tmpdir, "selftest.pdf")
-        try:
-            started = time.perf_counter()
-            stats = await run_conversion(
-                SELFTEST_MD, pdf_path, {**settings, "title": "selftest"}
-            )
-            elapsed = time.perf_counter() - started
-            info = await asyncio.to_thread(_inspect_pdf, pdf_path, chapter)
-            lines.append("")
-            lines.append("📄 نتیجهٔ رندر:")
-            lines.append(f"  زمان: {elapsed:.1f} ثانیه")
-            lines.append(f"  footer: {stats.get('footer')}")
-            lines.append(f"  front_matter: {stats.get('front_matter')}")
-            lines.append(f"  heading_diag: {stats.get('heading_diag')}")
-            lines.append(f"  bookmarks: {stats.get('bookmarks')}")
-            lines.append(f"  mathjax: {stats.get('arith')} فرمول، خطا: {stats.get('math_error_count')}")
-            sample_html = build_html(SELFTEST_MD, front=True, persian_font=persian_choice)[0]
-            callout_classes = sorted(set(CALLOUT_CLASS_RE.findall(sample_html)))
-            lines.append(f"  callouts در HTML: {callout_classes}")
-            lines.append(f"  فونت بدنه: {'bnazanin' if 'font-bnazanin' in sample_html and persian_font_available() else 'vazirmatn'}")
-            lines.append("")
-            lines.append("🔍 بررسی PDF:")
-            lines += [f"  {k}: {v}" for k, v in info.items()]
-            lines.append(f"  هدر فصل «{chapter}» در صفحات: {info['header_pages']}")
-            await send_pdf(update.message, pdf_path, "selftest.pdf")
-        except Exception as exc:
-            logger.exception("Selftest failed")
-            lines.append("")
-            lines.append(f"❌ خطا در رندر: {type(exc).__name__}: {str(exc)[:400]}")
-    await safe_delete(status)
-    for chunk in _split_message("\n".join(lines)):
-        await update.message.reply_text(chunk)
-
-
-async def error_handler(update, context: ContextTypes.DEFAULT_TYPE):
-    logger.error("Unhandled error while processing an update", exc_info=context.error)
-
-
-async def post_init(application: Application):
-    try:
-        await ensure_browser()
-    except Exception:
-        logger.exception("Browser warm-up failed; it will be retried on the first request")
-
-
-async def post_shutdown(application: Application):
-    await close_browser()
-
-
-def main():
-    if "--fetch-assets" in sys.argv:
-        ensure_assets(force=True)
-        return
-
-    token = os.environ.get("BOT_TOKEN")
-    if not token:
-        logger.error("BOT_TOKEN is missing!")
-        sys.exit(1)
-
-    threading.Thread(target=run_dummy_server, daemon=True).start()
-    ensure_assets()
-
-    logger.info("Starting Telegram Bot... version=%s", BOT_VERSION)
-    app = (
-        Application.builder()
-        .token(token)
-        .concurrent_updates(True)
-        .post_init(post_init)
-        .post_shutdown(post_shutdown)
-        .build()
-    )
-
-    app.add_handler(CommandHandler(["start", "help", "settings"], start))
-    app.add_handler(CommandHandler("selftest", selftest))
-    app.add_handler(CallbackQueryHandler(button_callback))
-    app.add_handler(MessageHandler(filters.Document.ALL, handle_document))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
-    app.add_error_handler(error_handler)
-
-    app.run_polling()
-
-
-if __name__ == "__main__":
-    main()
+        chromiu
