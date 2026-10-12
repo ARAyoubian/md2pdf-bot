@@ -69,7 +69,7 @@ IMAGE_MIME = {".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg", 
 MAX_CONCURRENT = max(1, _env_int("MAX_CONCURRENT", 1))
 
 
-CONVERSION_TIMEOUT = _env_int("CONVERSION_TIMEOUT", 120)
+CONVERSION_TIMEOUT = _env_int("CONVERSION_TIMEOUT", 300)
 
 
 RENDER_TIMEOUT_MS = 60_000
