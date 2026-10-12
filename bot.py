@@ -60,7 +60,7 @@ from telegram.ext import (
     filters,
 )
 
-BOT_VERSION = "r25-toc-title-rtl"
+BOT_VERSION = "r26-two-modes"
 
 logging.basicConfig(
     format="%(asctime)s %(levelname)s %(name)s: %(message)s", level=logging.INFO
@@ -95,9 +95,6 @@ JS_HEAP_MB = _env_int("JS_HEAP_MB", 192)
 TELEGRAM_UPLOAD_LIMIT = 49 * 1024 * 1024
 PDF_PAGE_FORMAT = os.environ.get("PDF_PAGE_FORMAT", "A4")
 FONT_SIZES = ("small", "normal", "large")
-TEMPLATES = ("classic", "academic", "minimal", "medoxin")
-TEMPLATE_LABELS = {"classic": "کلاسیک", "academic": "آکادمیک", "minimal": "مینیمال", "medoxin": "مدوکسین"}
-TEMPLATE_MARGINS = {"classic": "20mm", "academic": "25mm", "minimal": "22mm", "medoxin": "20mm"}
 ACCENTS = {
     "blue": "#0969da",
     "green": "#1a7f37",
@@ -293,7 +290,6 @@ def get_conversion_settings(chat_id):
         "page_format": get_user_setting(chat_id, "page_format", PDF_PAGE_FORMAT),
         "font_size": get_user_setting(chat_id, "font_size", "normal"),
         "print_mode": get_user_setting(chat_id, "print_mode", False),
-        "template": get_user_setting(chat_id, "template", "classic"),
         "accent": get_user_setting(chat_id, "accent", "blue"),
         "front": get_user_setting(chat_id, "front", True),
         "paper": get_user_setting(chat_id, "paper", True),
@@ -558,44 +554,8 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
         /* ───── رنگ تأکیدی ───── */
         h2 { color: var(--accent-color); }
         th { color: var(--accent-color); }
-
-        /* ───── قالب آکادمیک ───── */
-        body.tpl-academic:not(.compact-mode) { line-height: 1.95; }
-        body.tpl-academic h1 {
-            text-align: center;
-            border-bottom: 1px solid var(--accent-color);
-        }
-        body.tpl-academic h2 { border-bottom: none; }
-        body.tpl-academic blockquote,
-        body.tpl-academic blockquote[class*="callout-"] {
-            background: transparent;
-            border: 1px solid var(--accent-color);
-            border-radius: 2px;
-        }
-        body.tpl-academic table {
-            box-shadow: none;
-            border-top: 1.5px solid #333333;
-            border-bottom: 1.5px solid #333333;
-        }
-        body.tpl-academic th, body.tpl-academic td { border: none; }
-        body.tpl-academic th { background: transparent; border-bottom: 1px solid #333333; }
-        body.tpl-academic tr:nth-child(even) { background: transparent; }
-
-        /* ───── قالب مینیمال ───── */
-        body.tpl-minimal h1 { border-bottom: none; font-weight: 400; }
-        body.tpl-minimal h2 { border-bottom: none; }
-        body.tpl-minimal blockquote,
-        body.tpl-minimal blockquote[class*="callout-"] {
-            background: transparent;
-            border: none;
-            border-inline-start: 2px solid #999999;
-            border-radius: 0;
-        }
-        body.tpl-minimal table { box-shadow: none; }
-        body.tpl-minimal th, body.tpl-minimal td { border: none; border-bottom: 1px solid #eeeeee; }
-        body.tpl-minimal th { background: transparent; border-bottom: 1px solid #bbbbbb; }
-        body.tpl-minimal tr:nth-child(even) { background: transparent; }
-        body.tpl-minimal pre, body.tpl-minimal .codehilite { border: none; }
+        th { background-color: color-mix(in srgb, var(--accent-color) 14%, #ffffff); }
+        tr:nth-child(even) { background-color: color-mix(in srgb, var(--accent-color) 5%, #ffffff); }
 
         /* ───── پس‌زمینهٔ کاغذی ───── */
         body:not(.print-mode) { background-color: #fbf8f1; } /* همان PAPER_COLOR */
@@ -650,8 +610,6 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
         .cover-logo { width: 46mm; max-width: 55%; height: auto; margin-bottom: 14px; }
         .cover-subtitle { font-size: 20px; font-weight: 700; margin-bottom: 14px; color: var(--text-main); }
         .cover-brand { margin-top: 22px; font-size: 12px; letter-spacing: 0.5px; color: var(--text-muted); direction: ltr; }
-        body.tpl-medoxin h1 { border-bottom: 3px solid var(--accent-color); }
-        body.tpl-medoxin .cover-title { color: var(--accent-color); }
 
         /* ───── فهرست مطالب ───── */
         .toc { break-after: page; page-break-after: always; }
@@ -1594,8 +1552,6 @@ def build_html(
         classes.append(f"font-{font_size}")
     if print_mode:
         classes.append("print-mode")
-    if template in ("academic", "minimal", "medoxin"):
-        classes.append(f"tpl-{template}")
     if not paper:
         classes.append("paper-off")
     body_style = f"--accent-color: {ACCENTS.get(accent, ACCENTS['blue'])}"
@@ -1773,7 +1729,7 @@ async def generate_pdf_output(
     paper=True,
 ):
     page_format = page_format or PDF_PAGE_FORMAT
-    page_margin = "12mm" if compact else TEMPLATE_MARGINS.get(template, "20mm")
+    page_margin = "12mm" if compact else "20mm"
     build_kw = dict(
         orientation=orientation,
         compact=compact,
@@ -1947,9 +1903,7 @@ def get_settings_keyboard(chat_id):
         "large": "🔠 فونت: بزرگ",
     }.get(font_size, "🔤 فونت: معمولی")
     print_btn = "🖨 چاپ: کم‌مصرف" if print_mode else "🎨 چاپ: رنگی"
-    template = get_user_setting(chat_id, "template", "classic")
     accent = get_user_setting(chat_id, "accent", "blue")
-    template_btn = f"📐 قالب: {TEMPLATE_LABELS.get(template, 'کلاسیک')}"
     accent_btn = ACCENT_LABELS.get(accent, ACCENT_LABELS["blue"]).replace(" ", " رنگ: ", 1)
     front = get_user_setting(chat_id, "front", True)
     paper = get_user_setting(chat_id, "paper", True)
@@ -1968,10 +1922,7 @@ def get_settings_keyboard(chat_id):
             InlineKeyboardButton(font_btn, callback_data="cycle_font"),
         ],
         [InlineKeyboardButton(print_btn, callback_data="toggle_print")],
-        [
-            InlineKeyboardButton(template_btn, callback_data="cycle_template"),
-            InlineKeyboardButton(accent_btn, callback_data="cycle_accent"),
-        ],
+        [InlineKeyboardButton(accent_btn, callback_data="cycle_accent")],
         [
             InlineKeyboardButton(front_btn, callback_data="toggle_front"),
             InlineKeyboardButton(paper_btn, callback_data="toggle_paper"),
@@ -2035,10 +1986,6 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif data == "toggle_print":
         current = get_user_setting(chat_id, "print_mode", False)
         set_user_setting(chat_id, "print_mode", not current)
-    elif data == "cycle_template":
-        current = get_user_setting(chat_id, "template", "classic")
-        index = TEMPLATES.index(current) if current in TEMPLATES else 0
-        set_user_setting(chat_id, "template", TEMPLATES[(index + 1) % len(TEMPLATES)])
     elif data == "cycle_accent":
         keys = list(ACCENTS)
         current = get_user_setting(chat_id, "accent", "blue")
