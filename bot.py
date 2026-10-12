@@ -34,9 +34,12 @@ import logging
 import os
 import re
 import secrets
+import shutil
+import subprocess
 import sys
 import tarfile
 import tempfile
+import time
 import unicodedata
 import threading
 import urllib.request
@@ -62,7 +65,7 @@ from telegram.ext import (
     filters,
 )
 
-BOT_VERSION = "r37-fonts-h2"
+BOT_VERSION = "r38-selftest-richer"
 
 logging.basicConfig(
     format="%(asctime)s %(levelname)s %(name)s: %(message)s", level=logging.INFO
@@ -750,7 +753,7 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
         body.font-bnazanin { font-family: 'BNazanin', 'Vazirmatn', 'Noto Sans Arabic', sans-serif; }
 
         /* ───── انگلیسی همیشه Arial (در لینوکس: Liberation Sans با متریک یکسان) ───── */
-        .en { font-family: Arial, 'Liberation Sans', Arimo, Helvetica, sans-serif; }
+        .en { font-family: Arial, 'Liberation Sans', Arimo, Helvetica, sans-serif; unicode-bidi: isolate; }
 
         /* PYGMENTS_INJECTION */
     </style>
@@ -1670,7 +1673,7 @@ def build_page_meta(total, front_info):
     return meta
 
 
-_LATIN_RUN_RE = re.compile(r"[A-Za-z][A-Za-z0-9 .,:;'\u2019&/+\-()]*")
+_LATIN_TOKEN_RE = re.compile(r"&#?[A-Za-z0-9]+;|[A-Za-z0-9](?:[A-Za-z0-9 .,:'\u2019/+\-]*[A-Za-z0-9])?")
 _SKIP_TAGS = ("pre", "code", "script", "style", "textarea")
 _VOID_TAGS = ("br", "img", "hr", "meta", "input", "col", "wbr", "link")
 _TAG_NAME_RE = re.compile(r"<\s*(/?)\s*([a-zA-Z0-9]+)([^>]*)>")
@@ -1705,7 +1708,11 @@ def apply_latin_spans(html_text: str) -> str:
         if skip_depth:
             out.append(part)
         else:
-            out.append(_LATIN_RUN_RE.sub(lambda m: f'<span class="en" dir="ltr">{m.group(0)}</span>', part))
+            out.append(_LATIN_TOKEN_RE.sub(
+                lambda m: m.group(0) if m.group(0).startswith("&")
+                else f'<span class="en" dir="ltr">{m.group(0)}</span>',
+                part,
+            ))
     return "".join(out)
 
 
@@ -2561,12 +2568,42 @@ SELFTEST_MD = r"""# عنوان آزمایشی
 
 # فصل اول آزمایشی
 
-## بخش اول
+## فاز I و فاز II (Functionalization Reactions)
+
+متن فارسی با Drug Metabolism داخل پرانتز (CYP3A4) و فاز I و فاز II.
+
+> [!NOTE]
+> نکتهٔ آزمایشی
+
+> [!EXAMPLE]
+> مثال بالینی آزمایشی
+
+> [!CLINICAL]
+> نکتهٔ بالینی آزمایشی
+
+> [!REVIEW]
+> سؤال مرور آزمایشی
+
+| مشخصه | فاز I (Phase) |
+|---|---|
+| هدف اصلی | اکسپوز |
+
+```python
+x = 1
+```
 
 فرمول محاسبه: $$INR = \left(\frac{\text{PT}_{\text{Patient}}}{\text{MNPT}}\right)^{ISI}$$
 
 - $\text{MNPT}$: آزمون
 - $ISI$: آزمون
+
+### خلاصه فصل
+
+خلاصهٔ آزمایشی.
+
+## بخش اول
+
+متن نهایی.
 """
 
 
@@ -2579,78 +2616,73 @@ def _pypdf_version():
         return None
 
 
-async def selftest(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """رندر یک نمونهٔ ثابت و گزارش وضعیت؛ برای عیب‌یابی."""
-    if not update.message or not await check_access(update):
-        return
-    checks = {
-        "mathjax": (ASSETS_DIR / "mathjax" / "tex-chtml.js").is_file(),
-        "mermaid": (ASSETS_DIR / "mermaid" / "mermaid.min.js").is_file(),
-        "font": (ASSETS_DIR / "fonts" / "Vazirmatn-Variable.woff2").is_file(),
-        "pypdf": _pypdf_version(),
-        "bnazanin": persian_font_available(),
-    }
-    status = await update.message.reply_text("🧪 در حال آزمایش ...")
-    with tempfile.TemporaryDirectory(prefix="md2pdf_self_") as tmpdir:
-        pdf_path = os.path.join(tmpdir, "selftest.pdf")
+CALLOUT_CLASS_RE = re.compile(r'class="(callout-\w+)"')
+
+
+def _inspect_pdf(pdf_path: str, chapter_text: str) -> dict:
+    """بررسی‌های خواندنی از روی PDF نهایی (صفحه‌ها، فونت‌ها، فهرست، هدر، متادیتا)."""
+    from pypdf import PdfReader
+
+    reader = PdfReader(pdf_path)
+    pages = list(reader.pages)
+    texts = [(pg.extract_text() or "") for pg in pages]
+    fonts = set()
+    for pg in pages:
         try:
-            stats = await run_conversion(SELFTEST_MD, pdf_path, get_conversion_settings(update.effective_chat.id))
-            report = f"✅ نسخه {BOT_VERSION}\nفایل‌ها: {checks}\nآمار رندر: {stats}"
-            await send_pdf(update.message, pdf_path, "selftest.pdf")
-        except Exception as exc:
-            logger.exception("Selftest failed")
-            report = f"❌ نسخه {BOT_VERSION}\nفایل‌ها: {checks}\nخطا: {type(exc).__name__}: {str(exc)[:400]}"
-    await safe_delete(status)
-    await update.message.reply_text(report)
+            resources = pg.get("/Resources") or {}
+            font_dict = resources.get("/Font") or {}
+            for key in font_dict:
+                base = font_dict[key].get_object().get("/BaseFont")
+                if base:
+                    fonts.add(str(base).split("+")[-1].lstrip("/"))
+        except Exception:
+            continue
+    chapter_key = _letters(chapter_text)
+    header_pages = [i for i, t in enumerate(texts) if chapter_key and (chapter_key - _letters(t)) == Counter()]
+    meta = reader.metadata or {}
+    return {
+        "pages": len(pages),
+        "toc_dashes": texts[1].count("–") if len(texts) > 1 else None,
+        "fonts": sorted(fonts),
+        "header_pages": header_pages[:6],
+        "author": str(meta.get("/Author", "")),
+        "producer": str(meta.get("/Producer", "")),
+    }
 
 
-async def error_handler(update, context: ContextTypes.DEFAULT_TYPE):
-    logger.error("Unhandled error while processing an update", exc_info=context.error)
+def _env_report(persian_choice: str, chromium_version: str) -> dict:
+    def fc(name):
+        try:
+            out = subprocess.run(["fc-match", name], capture_output=True, text=True, timeout=5).stdout.strip()
+            return out.split(":")[0] if out else "نامشخص"
+        except Exception:
+            return "خطا"
 
-
-async def post_init(application: Application):
     try:
-        await ensure_browser()
+        converters.find_pandoc()
+        pandoc = True
     except Exception:
-        logger.exception("Browser warm-up failed; it will be retried on the first request")
+        pandoc = False
+    return {
+        "persian_choice": persian_choice,
+        "bnazanin_file": persian_font_available(),
+        "fc_Vazirmatn": fc("Vazirmatn"),
+        "fc_BNazanin": fc("BNazanin"),
+        "fc_Arial": fc("Arial"),
+        "chromium": chromium_version,
+        "libreoffice": shutil.which("soffice") is not None,
+        "pandoc": pandoc,
+        "pypdf": _pypdf_version(),
+        "mathjax_asset": (ASSETS_DIR / "mathjax" / "tex-chtml.js").is_file(),
+        "mermaid_asset": (ASSETS_DIR / "mermaid" / "mermaid.min.js").is_file(),
+        "vazir_ttf_static": (ASSETS_DIR / "fonts" / "Vazirmatn-Regular.ttf").is_file(),
+    }
 
 
-async def post_shutdown(application: Application):
-    await close_browser()
-
-
-def main():
-    if "--fetch-assets" in sys.argv:
-        ensure_assets(force=True)
-        return
-
-    token = os.environ.get("BOT_TOKEN")
-    if not token:
-        logger.error("BOT_TOKEN is missing!")
-        sys.exit(1)
-
-    threading.Thread(target=run_dummy_server, daemon=True).start()
-    ensure_assets()
-
-    logger.info("Starting Telegram Bot... version=%s", BOT_VERSION)
-    app = (
-        Application.builder()
-        .token(token)
-        .concurrent_updates(True)
-        .post_init(post_init)
-        .post_shutdown(post_shutdown)
-        .build()
-    )
-
-    app.add_handler(CommandHandler(["start", "help", "settings"], start))
-    app.add_handler(CommandHandler("selftest", selftest))
-    app.add_handler(CallbackQueryHandler(button_callback))
-    app.add_handler(MessageHandler(filters.Document.ALL, handle_document))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
-    app.add_error_handler(error_handler)
-
-    app.run_polling()
-
-
-if __name__ == "__main__":
-    main()
+def _latin_report() -> dict:
+    sample = "متن (Drug Metabolism) و فاز I و فاز II (CYP3A4) و Abc &amp; def."
+    out = apply_latin_spans(sample)
+    spans = re.findall(r'<span class="en" dir="ltr">(.*?)</span>', out)
+    return {
+        "spans": len(spans),
+        "bracket_inside_span": any(sp.startswith(("(", ")")) or sp.e
