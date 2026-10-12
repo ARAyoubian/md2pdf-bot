@@ -60,7 +60,7 @@ from telegram.ext import (
     filters,
 )
 
-BOT_VERSION = "r24-logo-transparent"
+BOT_VERSION = "r25-toc-title-rtl"
 
 logging.basicConfig(
     format="%(asctime)s %(levelname)s %(name)s: %(message)s", level=logging.INFO
@@ -656,6 +656,7 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
         /* ───── فهرست مطالب ───── */
         .toc { break-after: page; page-break-after: always; }
         .toc-title {
+            text-align: right;
             font-size: 22px;
             font-weight: 700;
             color: var(--accent-color);
@@ -1422,7 +1423,7 @@ def build_front_matter(title, date_text, headings, toc_pages, doc_title="", logo
             f'<a href="#{h["id"]}">{html.escape(h["text"])}</a>'
             f'<span class="toc-dots"></span><span class="toc-num">{num}</span></div>'
         )
-    toc = '<section class="toc"><div class="toc-title">فهرست مطالب</div>' + "".join(rows) + "</section>"
+    toc = '<section class="toc"><div class="toc-title" dir="rtl">فهرست مطالب</div>' + "".join(rows) + "</section>"
     return cover + toc
 
 
