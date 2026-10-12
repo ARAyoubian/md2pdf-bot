@@ -59,7 +59,7 @@ from telegram.ext import (
     filters,
 )
 
-BOT_VERSION = "r21-direction-rule"
+BOT_VERSION = "r22-line-direction"
 
 logging.basicConfig(
     format="%(asctime)s %(levelname)s %(name)s: %(message)s", level=logging.INFO
@@ -582,6 +582,9 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
         /* ───── پس‌زمینهٔ کاغذی ───── */
         body:not(.print-mode) { background-color: #fbf8f1; } /* همان PAPER_COLOR */
         body.paper-off, body.print-mode { background-color: #ffffff; }
+
+        /* ───── خط‌های جدا در یک پاراگراف ───── */
+        span.ln { display: block; }
 
         /* ───── نشان عنوان‌دار callout ───── */
         blockquote[class*="callout-"] > p:first-child > strong:first-child {
@@ -1214,6 +1217,23 @@ def text_direction(text: str) -> str:
     return "rtl"
 
 
+_BR_RE = re.compile(r"<br\s*/?>", re.I)
+_LINE_SPLIT_TAGS = ("p", "li", "td", "th", "blockquote", "dd", "dt")
+
+
+def _split_lines_with_direction(inner_html: str) -> str:
+    """
+    هر خط (جدا شده با سطر شکسته) جهت خودش را می‌گیرد.
+    بدون این کار، یک پاراگراف با چند خط فارسی و انگلیسی همه‌اش یک جهت می‌گرفت.
+    """
+    parts = []
+    for segment in _BR_RE.split(inner_html):
+        if not _plain_text(segment):
+            continue
+        parts.append(f'<span class="ln" dir="{text_direction(_plain_text(segment))}">{segment}</span>')
+    return "".join(parts)
+
+
 def apply_block_directions(html_text: str) -> str:
     """به هر بلوک، جهت را بر اساس متن خودش (با قاعدهٔ text_direction) می‌دهد."""
 
@@ -1221,7 +1241,10 @@ def apply_block_directions(html_text: str) -> str:
         tag, attrs, inner = match.group(1), match.group(2), match.group(3)
         attrs = re.sub(r'\s+dir="[^"]*"', "", attrs)
         direction = text_direction(_plain_text(inner))
-        return f'<{tag}{attrs} dir="{direction}">{apply_block_directions(inner)}</{tag}>'
+        inner = apply_block_directions(inner)
+        if tag in _LINE_SPLIT_TAGS and _BR_RE.search(inner):
+            inner = _split_lines_with_direction(inner)
+        return f'<{tag}{attrs} dir="{direction}">{inner}</{tag}>'
 
     return _BLOCK_DIR_RE.sub(repl, html_text)
 
