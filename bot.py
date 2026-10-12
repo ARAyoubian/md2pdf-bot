@@ -60,7 +60,7 @@ from telegram.ext import (
     filters,
 )
 
-BOT_VERSION = "r31-visual-polish"
+BOT_VERSION = "r32-markers-logo"
 
 logging.basicConfig(
     format="%(asctime)s %(levelname)s %(name)s: %(message)s", level=logging.INFO
@@ -653,7 +653,7 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
             border-bottom: 6px solid var(--accent-color);
             padding: 12mm 0;
         }
-        .cover-logo { width: 62mm; max-width: 70%; }
+        .cover-logo { width: 93mm; max-width: 90%; }
         .cover-title { font-size: 36px; font-weight: 800; color: var(--accent-color); }
         .cover-subtitle { font-size: 16px; font-weight: 400; color: var(--text-muted); margin-bottom: 14px; }
 
@@ -679,6 +679,8 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
         blockquote[class*="callout-"] { border-inline-start-width: 6px; padding: 14px 20px; }
         blockquote[class*="callout-"] > p:first-child > strong:first-child { font-size: 1em; padding: 3px 14px; }
         body.print-mode blockquote { border-inline-start-width: 6px !important; }
+
+        .hm { font-size: 1px; color: #ffffff; }
 
         /* PYGMENTS_INJECTION */
     </style>
@@ -1435,6 +1437,41 @@ def build_front_matter(title, date_text, headings, toc_pages, doc_title="", logo
     return cover + toc
 
 
+_MARK_TOKEN_RE = re.compile(r"zqm(\d+)zq")
+
+
+def _mark_headings(body_html: str) -> str:
+    """
+    هر عنوان (با همان قاعدهٔ extract_headings) یک نشانهٔ نامرئی ASCII می‌گیرد: zqm<i>zq.
+    این نشانه‌ها با استخراج متن PDF خوانا هستند و جای bookmark ها را می‌گیرند،
+    چون bookmark ها برای بعضی عنوان‌های فارسی/مختلط درست نگاشت نمی‌شدند.
+    """
+    counter = 0
+
+    def repl(match):
+        nonlocal counter
+        opening, level, inner, closing = match.group(1), match.group(2), match.group(3), match.group(4)
+        id_match = re.search(r'\bid="([^"]+)"', opening)
+        if not id_match or not _plain_text(inner):
+            return match.group(0)
+        token = f'<span class="hm">zqm{counter}zq</span>'
+        counter += 1
+        return f"{opening}{token}{inner}{token}{closing}"
+
+    return re.sub(r"(<h([1-3])\b[^>]*>)(.*?)(</h\2>)", repl, body_html, flags=re.S)
+
+
+def find_marker_pages(pdf_path):
+    """{اندیس عنوان: اندیس صفحهٔ 0-based} از روی نشانه‌های _mark_headings."""
+    from pypdf import PdfReader
+
+    found = {}
+    for page_idx, page in enumerate(PdfReader(pdf_path).pages):
+        for match in _MARK_TOKEN_RE.finditer(page.extract_text() or ""):
+            found.setdefault(int(match.group(1)), page_idx)
+    return found
+
+
 def read_outline(pdf_path):
     """bookmark های PDF به ترتیب: [(عنوان، اندیس صفحهٔ 0-based)]."""
     from pypdf import PdfReader
@@ -1527,6 +1564,7 @@ def build_html(
     front=False,
     toc_pages=None,
     date_text="",
+    mark_headings=False,
 ):
     """Markdown → HTML کامل. خروجی: (html, has_math, has_mermaid)"""
     # نمودارهای mermaid قبل از هر پردازش دیگری جدا می‌شوند و بعد از پاک‌سازی HTML برمی‌گردند
@@ -1585,6 +1623,8 @@ def build_html(
             doc_title = _plain_text(first_h1.group(1))
             body = body[first_h1.end():]
     headings = extract_headings(body)
+    if front and mark_headings:
+        body = _mark_headings(body)
     body = wrap_chapter_summaries(body)
     if front and (headings or doc_title):
         body = build_front_matter(
@@ -1806,7 +1846,7 @@ async def generate_pdf_output(
     try:
         await context.route("**/*", make_router(documents))
         full_html, has_math, has_mermaid, headings = await asyncio.to_thread(
-            build_html, md_text, **build_kw
+            build_html, md_text, mark_headings=bool(front), **build_kw
         )
 
         front_info = None
@@ -1816,15 +1856,17 @@ async def generate_pdf_output(
             await render_pdf(context, documents, full_html, has_math, has_mermaid,
                              pass1, page_format, orientation, page_margin)
             try:
-                outline = await asyncio.to_thread(read_outline, pass1)
+                marker_pages = await asyncio.to_thread(find_marker_pages, pass1)
             except Exception:
-                logger.exception("Reading PDF outline failed; TOC page numbers will be missing")
-                outline = []
+                logger.exception("Reading heading markers failed; TOC page numbers will be missing")
+                marker_pages = {}
             finally:
                 with contextlib.suppress(OSError):
                     os.remove(pass1)
 
-            heading_pages = map_headings_to_pages(headings, outline)
+            heading_pages = {
+                h["id"]: marker_pages[i] for i, h in enumerate(headings) if i in marker_pages
+            }
             # مرحلهٔ دوم: فهرست با شماره‌صفحه
             full_html, has_math, has_mermaid, headings = await asyncio.to_thread(
                 build_html, md_text, toc_pages=heading_pages, **build_kw
