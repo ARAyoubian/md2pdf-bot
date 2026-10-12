@@ -259,7 +259,10 @@ def build_reference_docx(out_path: str, font_name: str = FARSI_FONT) -> str:
         if rfonts is None:
             rfonts = OxmlElement("w:rFonts")
             rpr.insert(0, rfonts)
-        for attr in ("w:ascii", "w:hAnsi", "w:cs", "w:eastAsia"):
+        # متن لاتین همیشه Arial؛ متن فارسی (cs/eastAsia) فونت فارسی
+        for attr in ("w:ascii", "w:hAnsi"):
+            rfonts.set(qn(attr), "Arial")
+        for attr in ("w:cs", "w:eastAsia"):
             rfonts.set(qn(attr), font_name)
         for attr in ("w:asciiTheme", "w:hAnsiTheme", "w:cstheme", "w:eastAsiaTheme"):
             if rfonts.get(qn(attr)) is not None:
