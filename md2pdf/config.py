@@ -7,7 +7,7 @@ import re
 
 
 
-BOT_VERSION = "r42-infinity"
+BOT_VERSION = " r41-vazirmatn-stack"
 
 
 
