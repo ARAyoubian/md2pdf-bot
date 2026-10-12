@@ -22,6 +22,7 @@
 """
 import asyncio
 import base64
+from collections import Counter
 import contextlib
 import gc
 from datetime import datetime, timedelta, timezone
@@ -61,7 +62,7 @@ from telegram.ext import (
     filters,
 )
 
-BOT_VERSION = "r34-title-keys"
+BOT_VERSION = "r35-letter-subset"
 
 logging.basicConfig(
     format="%(asctime)s %(levelname)s %(name)s: %(message)s", level=logging.INFO
@@ -1510,22 +1511,39 @@ def _title_key(text):
     return tuple(sorted(re.sub(r"[^\w]+", " ", text).split()))
 
 
+def _letters(text):
+    """فقط حروف و ارقام (بدون فاصله و علامت) برای مقایسهٔ چندمجموعه‌ای."""
+    text = unicodedata.normalize("NFKC", text or "")
+    text = text.replace("\u064a", "\u06cc").replace("\u0643", "\u06a9")
+    text = _ZERO_WIDTH_RE.sub("", text).lower()
+    return Counter(ch for ch in text if ch.isalnum())
+
+
 def map_headings_to_pages(headings, outline):
     """
-    نگاشت عنوان‌ها به صفحه از روی bookmark ها.
-    اول با کلید عنوان؛ اگر هنوز چیزی مانده و تعداد bookmark ها با عنوان‌ها برابر است،
-    به ترتیب (همان ترتیب سند) نگاشت می‌شود.
+    نگاشت عنوان‌ها به صفحه از روی bookmark ها (به ترتیب سند).
+    1) تطابق کامل کلمات؛ 2) اگر نشد: حروف عنوان در bookmark باشد (bookmark های PDF
+    گاهی کلمات را بهم می‌چسبانند یا حروف لاتین اضافه دارند).
     """
     result, cursor = {}, 0
     keys = [_title_key(title) for title, _ in outline]
+    letter_bags = [_letters(title) for title, _ in outline]
     for h in headings:
         want = _title_key(h["text"])
+        want_letters = _letters(h["text"])
+        match = None
         for j in range(cursor, len(outline)):
-            page = outline[j][1]
-            if keys[j] == want and page is not None:
-                result[h["id"]] = page
-                cursor = j + 1
+            if outline[j][1] is not None and keys[j] == want:
+                match = j
                 break
+        if match is None and sum(want_letters.values()) >= 3:
+            for j in range(cursor, len(outline)):
+                if outline[j][1] is not None and (want_letters - letter_bags[j]) == Counter():
+                    match = j
+                    break
+        if match is not None:
+            result[h["id"]] = outline[match][1]
+            cursor = match + 1
     if len(result) < len(headings) and len(outline) == len(headings):
         for h, (_, page) in zip(headings, outline):
             if h["id"] not in result and page is not None:
