@@ -122,6 +122,7 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
         }
 
         img { max-width: 100%; height: auto; }
+        .figure { break-inside: avoid; page-break-inside: avoid; }
         /* عکس و توضیح زیرش وسط‌چین */
         p:has(> img), p:has(> em:only-child) { text-align: center; }
 
@@ -810,6 +811,11 @@ def apply_latin_spans(html_text: str) -> str:
 
 
 
+_FIGURE_RE = re.compile(
+    r"<p[^>]*>\s*<img[^>]*>\s*</p>(?:\s*<p[^>]*>\s*<em>.*?</em>\s*</p>)?", re.S
+)
+
+
 def build_html(
     md_text,
     orientation="portrait",
@@ -893,6 +899,8 @@ def build_html(
         ) + body
 
     body = apply_latin_spans(body)
+    # عکس و توضیح زیرش یک بلوک نشکن‌پذیر می‌شوند تا کنار هم بمانند
+    body = _FIGURE_RE.sub(lambda m: '<div class="figure">' + m.group(0) + "</div>", body)
     classes = []
     if compact:
         classes.append("compact-mode")
