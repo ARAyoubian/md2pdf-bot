@@ -15,9 +15,9 @@ import converters
 import os
 import tempfile
 import zipfile
-from md2pdf.config import (ACCENTS, ACCENT_LABELS, ALLOWED_USER_IDS, ASSETS_DIR, BOT_VERSION, CONVERSION_TIMEOUT, FONT_SIZES, MAX_DOCX_BYTES, MAX_DOCX_UNCOMPRESSED, MAX_TEXT_BYTES, MAX_ZIP_BYTES, MAX_ZIP_ENTRIES, MAX_ZIP_UNCOMPRESSED, PDF_PAGE_FORMAT, TELEGRAM_UPLOAD_LIMIT, TEXT_EXTENSIONS, _active_users, conversion_semaphore, logger)
+from md2pdf.config import (ACCENTS, ACCENT_LABELS, ALLOWED_USER_IDS, ASSETS_DIR, BOT_VERSION, CONVERSION_TIMEOUT, FONT_SIZES, IMAGE_MIME, MAX_DOCX_BYTES, MAX_DOCX_UNCOMPRESSED, MAX_IMAGE_BYTES, MAX_IMAGES_TOTAL, MAX_TEXT_BYTES, MAX_ZIP_BYTES, MAX_ZIP_ENTRIES, MAX_ZIP_UNCOMPRESSED, PDF_PAGE_FORMAT, TELEGRAM_UPLOAD_LIMIT, TEXT_EXTENSIONS, _active_users, conversion_semaphore, logger)
 from md2pdf.html_build import (clean_filename, decode_text, error_detail)
-from md2pdf.md_preprocess import (prepare_markdown)
+from md2pdf.md_preprocess import (inject_images, prepare_markdown)
 from md2pdf.pdf_render import (render_warnings, run_conversion, set_pdf_metadata)
 from md2pdf.settings_store import (get_conversion_settings, get_output_format, get_user_setting, set_user_setting)
 
@@ -277,14 +277,41 @@ async def process_conversion(update: Update, context: ContextTypes.DEFAULT_TYPE,
 
 
 
+def _collect_zip_images(zf, infos):
+    """عکس‌های ZIP را با محدودیت حجم می‌خواند؛ کلید: شناسهٔ IMG-01 (نام فایل بدون پسوند)."""
+    images, skipped, total = {}, [], 0
+    for info in infos:
+        base = os.path.basename(info.filename)
+        ext = os.path.splitext(base)[1].lower()
+        stem = os.path.splitext(base)[0].upper()
+        if info.filename.startswith("__MACOSX/") or base.startswith("._") or ext not in IMAGE_MIME:
+            continue
+        if not stem.startswith("IMG-") or stem in images:
+            continue
+        if info.file_size > MAX_IMAGE_BYTES or total + info.file_size > MAX_IMAGES_TOTAL:
+            skipped.append(f"{base} (حجم زیاد)")
+            continue
+        with zf.open(info) as fh:
+            data = fh.read(MAX_IMAGE_BYTES + 1)
+        if len(data) > MAX_IMAGE_BYTES:
+            skipped.append(f"{base} (حجم زیاد)")
+            continue
+        total += len(data)
+        images[stem] = (IMAGE_MIME[ext], data)
+    return images, skipped
+
+
 def read_zip_documents(zip_path):
-    """فایل‌های متنی داخل ZIP را مستقیماً در حافظه و با محدودیت حجم می‌خواند (بدون extractall)."""
+    """فایل‌های متنی داخل ZIP را مستقیماً در حافظه و با محدودیت حجم می‌خواند (بدون extractall).
+    عکس‌های IMG-xx داخل Markdown جایگذاری می‌شوند."""
     docs, skipped = [], []
     total = 0
     used_titles = {}
 
     with zipfile.ZipFile(zip_path) as zf:
         infos = sorted((i for i in zf.infolist() if not i.is_dir()), key=lambda i: i.filename)
+        images, image_skipped = _collect_zip_images(zf, infos)
+        skipped.extend(image_skipped)
         for info in infos:
             name = info.filename
             base = os.path.basename(name)
@@ -314,7 +341,12 @@ def read_zip_documents(zip_path):
             used_titles[title] = count + 1
             if count:
                 title = f"{title}_{count + 1}"
-            docs.append((title, decode_text(data)))
+            text = decode_text(data)
+            if images:
+                text, missing = inject_images(text, images)
+                for ident in missing:
+                    skipped.append(f"تصویر {ident} برای «{title}» داخل ZIP پیدا نشد")
+            docs.append((title, text))
     return docs, skipped
 
 
