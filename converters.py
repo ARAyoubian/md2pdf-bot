@@ -205,6 +205,24 @@ def apply_docx_directions(docx_path: str) -> str:
 
     for paragraph in doc.paragraphs:
         fix(paragraph)
+    # عکس و توضیح زیر آن وسط‌چین (کپشن = پاراگراف بعدی که همه‌اش ایتالیک است)
+    from docx.enum.text import WD_ALIGN_PARAGRAPH
+    from docx.text.paragraph import Paragraph
+    for paragraph in doc.paragraphs:
+        if not paragraph._p.findall(".//" + qn("w:drawing")):
+            continue
+        paragraph.alignment = WD_ALIGN_PARAGRAPH.CENTER
+        nxt = paragraph._p.getnext()
+        while nxt is not None and nxt.tag == qn("w:p"):
+            caption = Paragraph(nxt, paragraph._parent)
+            runs = [r for r in caption.runs if r.text.strip()]
+            is_caption = bool(runs) and (
+                all(r.italic for r in runs) or caption.style.name == "Image Caption"
+            )
+            if not is_caption:
+                break
+            caption.alignment = WD_ALIGN_PARAGRAPH.CENTER
+            nxt = nxt.getnext()
     for table in doc.tables:
         for row in table.rows:
             for cell in row.cells:
