@@ -36,6 +36,7 @@ import secrets
 import sys
 import tarfile
 import tempfile
+import unicodedata
 import threading
 import urllib.request
 import zipfile
@@ -60,7 +61,7 @@ from telegram.ext import (
     filters,
 )
 
-BOT_VERSION = "r33-heading-fallback"
+BOT_VERSION = "r34-title-keys"
 
 logging.basicConfig(
     format="%(asctime)s %(levelname)s %(name)s: %(message)s", level=logging.INFO
@@ -1494,13 +1495,27 @@ def read_outline(pdf_path):
     return items
 
 
+_ZERO_WIDTH_RE = re.compile("[\u200b-\u200f\u202a-\u202e\u2066-\u2069\ufeff]")
+
+
 def _title_key(text):
-    """کلید مقایسهٔ عنوان؛ به ترتیب کلمات و علائم نگارشی حساس نیست.
-    (بعضی نسخه‌های Chromium عنوان bookmark را با ترتیب دیداری راست‌به‌چپ ذخیره می‌کنند.)"""
-    return tuple(sorted(re.sub(r"[^\w]+", " ", text or "").split()))
+    """
+    کلید مقایسهٔ عنوان بین متن Markdown و bookmark های PDF:
+    یکسان‌سازی یونیکد، حروف عربی/فارسی (ي→ی، ك→ک)، حذف نیم‌فاصله و نشانه‌های جهت،
+    و بی‌توجهی به ترتیب کلمات و علائم نگارشی.
+    """
+    text = unicodedata.normalize("NFKC", text or "")
+    text = text.replace("\u064a", "\u06cc").replace("\u0643", "\u06a9").replace("\u0629", "\u0647")
+    text = _ZERO_WIDTH_RE.sub("", text)
+    return tuple(sorted(re.sub(r"[^\w]+", " ", text).split()))
 
 
 def map_headings_to_pages(headings, outline):
+    """
+    نگاشت عنوان‌ها به صفحه از روی bookmark ها.
+    اول با کلید عنوان؛ اگر هنوز چیزی مانده و تعداد bookmark ها با عنوان‌ها برابر است،
+    به ترتیب (همان ترتیب سند) نگاشت می‌شود.
+    """
     result, cursor = {}, 0
     keys = [_title_key(title) for title, _ in outline]
     for h in headings:
@@ -1511,10 +1526,9 @@ def map_headings_to_pages(headings, outline):
                 result[h["id"]] = page
                 cursor = j + 1
                 break
-    if not result and outline and len(outline) == len(headings):
-        # اگر عنوان‌ها تطبیق نخوردند ولی تعدادشان برابر است، به ترتیب نگاشت می‌شوند
+    if len(result) < len(headings) and len(outline) == len(headings):
         for h, (_, page) in zip(headings, outline):
-            if page is not None:
+            if h["id"] not in result and page is not None:
                 result[h["id"]] = page
     return result
 
