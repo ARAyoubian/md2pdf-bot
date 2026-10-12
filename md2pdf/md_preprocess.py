@@ -296,9 +296,32 @@ MERMAID_FENCE_RE = re.compile(
 
 
 
+def reduce_deep_indent(md_text: str) -> str:
+    """
+    تورفتگی ۴ فاصله‌ای یا بیشتر (خارج از بلاک کد) در Markdown یعنی «کد»؛ در جزوه‌ها معمولاً
+    فهرست‌های تودرتو هستند. این تابع تورفتگی را به ۲ فاصله کاهش می‌دهد تا جعبهٔ کد نسازد.
+    """
+    out = []
+    in_fence = False
+    for line in md_text.split("\n"):
+        if _FENCE_RE.match(line):
+            in_fence = not in_fence
+            out.append(line)
+            continue
+        if in_fence or not line.strip():
+            out.append(line)
+            continue
+        indent = len(line) - len(line.lstrip(" "))
+        if indent >= 4:
+            line = " " * 2 + line.lstrip(" ")
+        out.append(line)
+    return "\n".join(out)
+
+
 def prepare_markdown(md_text: str) -> str:
     """پیش‌پردازش مشترک Markdown برای همهٔ خروجی‌ها (فرمول‌های escape‌شده و ...)."""
-    text = unescape_escaped_math(md_text)
+    text = reduce_deep_indent(md_text)
+    text = unescape_escaped_math(text)
     text = normalize_display_math(text)
     return auto_repair_latex(text)
 
