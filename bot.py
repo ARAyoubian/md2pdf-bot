@@ -62,7 +62,7 @@ from telegram.ext import (
     filters,
 )
 
-BOT_VERSION = "r35-letter-subset"
+BOT_VERSION = "r36b-callout-split"
 
 logging.basicConfig(
     format="%(asctime)s %(levelname)s %(name)s: %(message)s", level=logging.INFO
@@ -684,6 +684,45 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
 
         .hm { font-size: 1px; color: #ffffff; }
 
+        /* ───── r36: جداکننده بین مباحث بزرگ ───── */
+        h2 { border-bottom: none; padding-bottom: 0; }
+        h2::after {
+            content: "";
+            display: block;
+            width: 48px;
+            height: 3px;
+            margin-top: 6px;
+            background: var(--accent-color);
+            border-radius: 2px;
+        }
+
+        /* ───── r36: انواع callout جدید ───── */
+        blockquote.callout-example { background: var(--example-bg); border-inline-start-color: var(--example-border); }
+        blockquote.callout-clinical { background: var(--clinical-bg); border-inline-start-color: var(--clinical-border); }
+        blockquote.callout-review { background: var(--review-bg); border-inline-start-color: var(--review-border); border-style: dashed; border-width: 1px; border-inline-start-width: 6px; }
+        blockquote.callout-example > p:first-child > strong:first-child { background: var(--example-border); }
+        blockquote.callout-clinical > p:first-child > strong:first-child { background: var(--clinical-border); }
+        blockquote.callout-review > p:first-child > strong:first-child { background: var(--review-border); }
+        body:not(.print-mode) {
+            --example-bg: #f0f7ff; --example-border: #2563a6;
+            --clinical-bg: #effaf6; --clinical-border: #0f766e;
+            --review-bg: #f5f3ff; --review-border: #6d5bd0;
+        }
+        body.print-mode {
+            --example-bg: #ffffff; --example-border: #444444;
+            --clinical-bg: #ffffff; --clinical-border: #666666;
+            --review-bg: #ffffff; --review-border: #222222;
+        }
+
+        /* ───── r36: جدول با ستون برچسب رنگی ───── */
+        th:first-child, td:first-child { width: 22%; }
+        tbody td:first-child {
+            background-color: color-mix(in srgb, var(--accent-color) 10%, #ffffff);
+            font-weight: 700;
+            color: var(--accent-color);
+        }
+        body.print-mode tbody td:first-child { color: #000000; }
+
         /* PYGMENTS_INJECTION */
     </style>
     {{SCRIPTS}}
@@ -1176,15 +1215,35 @@ CALLOUT_LABELS = {
     "WARNING": ("warning", "⚠️ هشدار:"),
     "TIP": ("tip", "💡 پیشنهاد:"),
     "IMPORTANT": ("important", "🔥 مهم:"),
+    "EXAMPLE": ("example", "🩺 مثال بالینی:"),
+    "CLINICAL": ("clinical", "🧠 نکته بالینی:"),
+    "REVIEW": ("review", "❓ سؤال مرور:"),
 }
 CALLOUT_ALERT_RE = re.compile(
-    r"<blockquote>\s*<p>\s*\[!(NOTE|WARNING|TIP|IMPORTANT)\]\s*(?:<br\s*/?>)?\s*",
+    r"<blockquote>\s*<p>\s*\[!(NOTE|WARNING|TIP|IMPORTANT|EXAMPLE|CLINICAL|REVIEW)\]\s*(?:<br\s*/?>)?\s*",
     re.IGNORECASE,
 )
 CALLOUT_EMOJI_RE = re.compile(
     r"<blockquote>\s*<p>\s*(?:<strong>)?\s*(📌|⚠\ufe0f?|💡|🔥)"
 )
-EMOJI_CALLOUT_CLASS = {"📌": "note", "⚠": "warning", "💡": "tip", "🔥": "important"}
+EMOJI_CALLOUT_CLASS = {"📌": "note", "⚠": "warning", "💡": "tip", "🔥": "important", "🩺": "example", "🧠": "clinical", "❓": "review"}
+
+
+_CALLOUT_LINE_START_RE = re.compile(r"^\s*>\s*\[!(?:NOTE|WARNING|TIP|IMPORTANT|EXAMPLE|CLINICAL|REVIEW)\]", re.IGNORECASE)
+
+
+def _separate_callouts(md_text: str) -> str:
+    """
+    Python-Markdown دو blockquote پشت‌سرهم (با خط خالی) را یکی می‌کند.
+    قبل از هر callout یک توضیح HTML (که nh3 حذفش می‌کند) می‌گذاریم تا جدا بماند.
+    """
+    out = []
+    for line in md_text.split("\n"):
+        if _CALLOUT_LINE_START_RE.match(line):
+            out.append("")
+            out.append("<!-- callout -->")
+        out.append(line)
+    return "\n".join(out)
 
 
 def apply_callouts(html_text: str) -> str:
@@ -1608,6 +1667,7 @@ def build_html(
         return f"\n\n{token}{len(mermaid_blocks) - 1}END\n\n"
 
     md_text = MERMAID_FENCE_RE.sub(stash_mermaid, md_text)
+    md_text = _separate_callouts(md_text)
     md_text = unescape_escaped_math(md_text)
     md_text = normalize_display_math(md_text)
     md_text = auto_repair_latex(md_text)
