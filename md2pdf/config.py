@@ -7,7 +7,7 @@ import re
 
 
 
-BOT_VERSION = "r41-vazirmatn-stack"
+BOT_VERSION = "r42-infinity"
 
 
 
@@ -61,6 +61,9 @@ MAX_DOCX_UNCOMPRESSED = _env_int("MAX_DOCX_UNCOMPRESSED", 100 * 1024 * 1024)
 
 
 MAX_ZIP_UNCOMPRESSED = _env_int("MAX_ZIP_UNCOMPRESSED", 50 * 1024 * 1024)
+MAX_IMAGE_BYTES = _env_int("MAX_IMAGE_BYTES", 5 * 1024 * 1024)
+MAX_IMAGES_TOTAL = _env_int("MAX_IMAGES_TOTAL", 30 * 1024 * 1024)
+IMAGE_MIME = {".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".webp": "image/webp", ".gif": "image/gif"}
 
 
 MAX_CONCURRENT = max(1, _env_int("MAX_CONCURRENT", 1))
