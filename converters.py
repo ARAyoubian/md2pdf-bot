@@ -52,6 +52,44 @@ _CALLOUT_START_RE = re.compile(r"^\s*>\s*\[!(NOTE|WARNING|TIP|IMPORTANT)\]\s*$",
 _QUOTE_PREFIX_RE = re.compile(r"^\s*>\s?")
 
 
+_NON_PLAIN_LINE_RE = re.compile(r"^(?:\s|[-*+]\s|\d+[.)]\s|>|\||#|<)")
+
+
+def _split_soft_line_breaks(md_text: str) -> str:
+    """
+    سطرهای پشت‌سرهم یک پاراگراف (شکست نرم Markdown) را به پاراگراف جدا تبدیل می‌کند،
+    تا هر خط جهت خودش را در Word بگیرد. فهرست، جدول، نقل‌قول، تیتر، کد و فرمول دست‌نخورده می‌مانند.
+    """
+    out = []
+    in_fence = False
+    in_math = False
+    prev_plain = False
+    for line in md_text.split("\n"):
+        stripped = line.strip()
+        if stripped.startswith(("```", "~~~")):
+            in_fence = not in_fence
+            out.append(line)
+            prev_plain = False
+            continue
+        if in_fence:
+            out.append(line)
+            continue
+        has_math_marker = "$$" in line
+        if has_math_marker and line.count("$$") % 2 == 1:
+            in_math = not in_math
+        plain = (
+            bool(stripped)
+            and not in_math
+            and not has_math_marker
+            and not _NON_PLAIN_LINE_RE.match(line)
+        )
+        if plain and prev_plain:
+            out.append("")
+        out.append(line)
+        prev_plain = plain
+    return "\n".join(out)
+
+
 def _docx_friendly_markdown(md_text: str) -> str:
     """
     callout های `> [!NOTE]` را به یک برچسب بولد و پاراگراف‌های عادی تبدیل می‌کند.
@@ -93,7 +131,7 @@ def md_to_docx(md_text: str, out_path: str, title: str = "", reference_doc: str 
     if reference_doc and os.path.isfile(reference_doc):
         cmd += ["--reference-doc", reference_doc]
 
-    source = _docx_friendly_markdown(md_text)
+    source = _split_soft_line_breaks(_docx_friendly_markdown(md_text))
     result = subprocess.run(
         cmd,
         input=source.encode("utf-8"),
