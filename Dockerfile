@@ -25,7 +25,7 @@ WORKDIR /app
 COPY requirements.txt .
 RUN pip install -r requirements.txt
 
-COPY bot.py converters.py ./
+COPY bot.py converters.py medoxin_logo.png ./
 
 # دانلود assets (MathJax، Mermaid، فونت‌های Vazirmatn، قالب Word فارسی) هنگام build
 RUN python bot.py --fetch-assets
