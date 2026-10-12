@@ -21,6 +21,7 @@
     ALLOW_REMOTE_IMAGES    اگر 1 باشد، تصاویر http/https داخل Markdown لود می‌شوند
 """
 import asyncio
+import base64
 import contextlib
 import gc
 from datetime import datetime, timedelta, timezone
@@ -59,7 +60,7 @@ from telegram.ext import (
     filters,
 )
 
-BOT_VERSION = "r22-line-direction"
+BOT_VERSION = "r24-logo-transparent"
 
 logging.basicConfig(
     format="%(asctime)s %(levelname)s %(name)s: %(message)s", level=logging.INFO
@@ -94,9 +95,9 @@ JS_HEAP_MB = _env_int("JS_HEAP_MB", 192)
 TELEGRAM_UPLOAD_LIMIT = 49 * 1024 * 1024
 PDF_PAGE_FORMAT = os.environ.get("PDF_PAGE_FORMAT", "A4")
 FONT_SIZES = ("small", "normal", "large")
-TEMPLATES = ("classic", "academic", "minimal")
-TEMPLATE_LABELS = {"classic": "کلاسیک", "academic": "آکادمیک", "minimal": "مینیمال"}
-TEMPLATE_MARGINS = {"classic": "20mm", "academic": "25mm", "minimal": "22mm"}
+TEMPLATES = ("classic", "academic", "minimal", "medoxin")
+TEMPLATE_LABELS = {"classic": "کلاسیک", "academic": "آکادمیک", "minimal": "مینیمال", "medoxin": "مدوکسین"}
+TEMPLATE_MARGINS = {"classic": "20mm", "academic": "25mm", "minimal": "22mm", "medoxin": "20mm"}
 ACCENTS = {
     "blue": "#0969da",
     "green": "#1a7f37",
@@ -105,6 +106,23 @@ ACCENTS = {
     "gray": "#444444",
 }
 ACCENT_LABELS = {"blue": "🔵 آبی", "green": "🟢 سبز", "purple": "🟣 بنفش", "red": "🔴 قرمز", "gray": "⚫ خاکستری"}
+ACCENTS.update({
+    "teal": "#0f766e",
+    "orange": "#c2410c",
+    "indigo": "#4338ca",
+    "rose": "#be123c",
+})
+ACCENT_LABELS.update({
+    "teal": "🩵 فیروزه‌ای",
+    "orange": "🟠 نارنجی",
+    "indigo": "🔷 نیلی",
+    "rose": "🌹 رز",
+})
+BRAND_NAME = "Medoxin"
+CHANNEL_HANDLE = "@Med402"
+CHANNEL_URL = "https://t.me/Med402"
+BRAND_FOOTER = f"{BRAND_NAME} · {CHANNEL_HANDLE}"
+LOGO_CANDIDATES = (BASE_DIR / "medoxin_logo.png", BASE_DIR / "medoxin_logo.jpg")
 ALLOW_REMOTE_IMAGES = os.environ.get("ALLOW_REMOTE_IMAGES", "0") == "1"
 DEBUG_ERRORS = os.environ.get("DEBUG_ERRORS", "0") == "1"
 
@@ -629,6 +647,11 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
         .cover-title { font-size: 34px; font-weight: 700; line-height: 1.5; margin-bottom: 18px; }
         .cover-line { width: 80px; height: 3px; background: var(--accent-color); margin: 0 auto 18px; }
         .cover-meta { font-size: 13px; color: var(--text-muted); }
+        .cover-logo { width: 46mm; max-width: 55%; height: auto; margin-bottom: 14px; }
+        .cover-subtitle { font-size: 20px; font-weight: 700; margin-bottom: 14px; color: var(--text-main); }
+        .cover-brand { margin-top: 22px; font-size: 12px; letter-spacing: 0.5px; color: var(--text-muted); direction: ltr; }
+        body.tpl-medoxin h1 { border-bottom: 3px solid var(--accent-color); }
+        body.tpl-medoxin .cover-title { color: var(--accent-color); }
 
         /* ───── فهرست مطالب ───── */
         .toc { break-after: page; page-break-after: always; }
@@ -805,7 +828,8 @@ html, body { margin: 0; padding: 0; }
     color: #8c959f;
 }
 .hd { position: absolute; top: 9mm; left: {{PAD}}; right: {{PAD}}; text-align: center; font-family: 'Vazirmatn', 'Noto Sans Arabic', sans-serif; font-size: 8pt; color: #8c959f; border-bottom: 0.4pt solid #d0d7de; padding-bottom: 2mm; }
-.ttl { max-width: 70%; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.ttl { max-width: 45%; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.brand { font-size: 7.5pt; letter-spacing: 0.3px; direction: ltr; }
 </style></head><body>{{PAGES}}</body></html>
 """
 
@@ -828,6 +852,7 @@ def build_footer_overlay(total, title, pad, width_mm, height_mm, meta=None):
         if show_footer:
             block.append(
                 f'<div class="ft"><span class="ttl" dir="{text_direction(title)}">{safe_title}</span>'
+                f'<span class="brand">{html.escape(BRAND_FOOTER)}</span>'
                 f"<span>صفحه {to_persian_digits(i)} از {to_persian_digits(total)}</span></div>"
             )
         block.append("</div>")
@@ -844,6 +869,25 @@ def count_pdf_pages(pdf_path: str) -> int:
     from pypdf import PdfReader
 
     return len(PdfReader(pdf_path).pages)
+
+
+def set_pdf_metadata(pdf_path: str, title: str = "") -> None:
+    """Author / Creator / Producer / Subject را روی برند کانال می‌گذارد."""
+    from pypdf import PdfReader, PdfWriter
+
+    writer = PdfWriter(clone_from=PdfReader(pdf_path))
+    writer.add_metadata({
+        "/Title": title or "",
+        "/Author": BRAND_NAME,
+        "/Creator": BRAND_NAME,
+        "/Producer": BRAND_NAME,
+        "/Subject": CHANNEL_HANDLE,
+        "/Keywords": f"{BRAND_NAME}, {CHANNEL_HANDLE}",
+    })
+    tmp_path = pdf_path + ".meta.tmp"
+    with open(tmp_path, "wb") as fh:
+        writer.write(fh)
+    os.replace(tmp_path, pdf_path)
 
 
 def count_bookmarks(pdf_path: str) -> int:
@@ -1279,9 +1323,10 @@ def gregorian_to_jalali(gy, gm, gd):
 
 
 def persian_date_text(now=None):
+    """تاریخ شمسی فقط ماه و سال، مثل «مهر ۱۴۰۵»."""
     now = now or datetime.now(IRAN_TZ)
-    jy, jm, jd = gregorian_to_jalali(now.year, now.month, now.day)
-    return f"{to_persian_digits(jd)} {PERSIAN_MONTHS[jm - 1]} {to_persian_digits(jy)}"
+    jy, jm, _jd = gregorian_to_jalali(now.year, now.month, now.day)
+    return f"{PERSIAN_MONTHS[jm - 1]} {to_persian_digits(jy)}"
 
 
 _HEADING_RE = re.compile(r"<h([1-3])\b([^>]*)>(.*?)</h\1>", re.S)
@@ -1330,16 +1375,44 @@ def wrap_chapter_summaries(body_html):
     return "".join(out)
 
 
-def build_front_matter(title, date_text, headings, toc_pages):
-    """جلد و فهرست مطالب. toc_pages: {id: اندیس صفحهٔ 0-based}."""
-    cover = (
-        '<section class="cover">'
-        '<div class="cover-kicker">جزوه</div>'
+def _logo_data_uri() -> str:
+    """لوگوی کانال به‌صورت data URI (بدون نیاز به درخواست شبکه یا مسیر فایل در مرورگر)."""
+    for path in LOGO_CANDIDATES:
+        try:
+            with open(path, "rb") as fh:
+                data = fh.read()
+        except OSError:
+            continue
+        mime = "image/png" if path.suffix.lower() == ".png" else "image/jpeg"
+        return f"data:{mime};base64," + base64.b64encode(data).decode("ascii")
+    return ""
+
+
+def build_front_matter(title, date_text, headings, toc_pages, doc_title="", logo_uri=""):
+    """
+    جلد (با لوگو، نام فایل، عنوان سند، ماه و سال و برند) و فهرست مطالب.
+    toc_pages: {id: اندیس صفحهٔ 0-based}.
+    """
+    cover_parts = ['<section class="cover">']
+    if logo_uri:
+        cover_parts.append(f'<img class="cover-logo" src="{logo_uri}" alt="{BRAND_NAME}">')
+    cover_parts.append('<div class="cover-kicker">جزوه</div>')
+    cover_parts.append(
         f'<div class="cover-title" dir="{text_direction(title)}">{html.escape(title or "")}</div>'
-        '<div class="cover-line"></div>'
-        f'<div class="cover-meta">{html.escape(date_text or "")}</div>'
-        "</section>"
     )
+    if doc_title:
+        cover_parts.append(
+            f'<div class="cover-subtitle" dir="{text_direction(doc_title)}">{html.escape(doc_title)}</div>'
+        )
+    cover_parts.append('<div class="cover-line"></div>')
+    cover_parts.append(f'<div class="cover-meta">{html.escape(date_text or "")}</div>')
+    cover_parts.append(f'<div class="cover-brand">{html.escape(BRAND_FOOTER)}</div>')
+    cover_parts.append("</section>")
+    cover = "".join(cover_parts)
+
+    if not headings:
+        return cover
+
     rows = []
     for h in headings:
         page = (toc_pages or {}).get(h["id"])
@@ -1349,7 +1422,7 @@ def build_front_matter(title, date_text, headings, toc_pages):
             f'<a href="#{h["id"]}">{html.escape(h["text"])}</a>'
             f'<span class="toc-dots"></span><span class="toc-num">{num}</span></div>'
         )
-    toc = '<section class="toc"><div class="toc-title" dir="rtl">فهرست مطالب</div>' + "".join(rows) + "</section>"
+    toc = '<section class="toc"><div class="toc-title">فهرست مطالب</div>' + "".join(rows) + "</section>"
     return cover + toc
 
 
@@ -1496,10 +1569,18 @@ def build_html(
         if n == 0:
             body = body.replace(placeholder, pre)
 
+    doc_title = ""
+    if front:
+        first_h1 = re.match(r"\s*<h1\b[^>]*>(.*?)</h1>", body, re.S)
+        if first_h1:
+            doc_title = _plain_text(first_h1.group(1))
+            body = body[first_h1.end():]
     headings = extract_headings(body)
     body = wrap_chapter_summaries(body)
-    if front and headings:
-        body = build_front_matter(title, date_text, headings, toc_pages) + body
+    if front and (headings or doc_title):
+        body = build_front_matter(
+            title, date_text, headings, toc_pages, doc_title=doc_title, logo_uri=_logo_data_uri()
+        ) + body
 
     classes = []
     if compact:
@@ -1512,7 +1593,7 @@ def build_html(
         classes.append(f"font-{font_size}")
     if print_mode:
         classes.append("print-mode")
-    if template in ("academic", "minimal"):
+    if template in ("academic", "minimal", "medoxin"):
         classes.append(f"tpl-{template}")
     if not paper:
         classes.append("paper-off")
@@ -1748,6 +1829,10 @@ async def generate_pdf_output(
         stats["footer"] = footer_status
         stats["bookmarks_before_footer"] = bookmarks_before
         stats["bookmarks"] = await asyncio.to_thread(count_bookmarks, output_pdf_path)
+        try:
+            await asyncio.to_thread(set_pdf_metadata, output_pdf_path, title)
+        except Exception:
+            logger.exception("Setting PDF metadata failed")
         stats["front_matter"] = bool(front_info)
         stats["paper_bg"] = bool(paper and not print_mode)
         logger.info("footer=%s bookmarks=%s->%s front=%s", footer_status,
@@ -2135,6 +2220,8 @@ async def handle_docx(update: Update, context: ContextTypes.DEFAULT_TYPE, docx_p
                 asyncio.to_thread(converters.docx_to_pdf, docx_path, out_dir, CONVERSION_TIMEOUT),
                 timeout=CONVERSION_TIMEOUT + 10,
             )
+        with contextlib.suppress(Exception):
+            await asyncio.to_thread(set_pdf_metadata, pdf_path, file_title)
         await send_file(message, pdf_path, f"{file_title}.pdf")
         await safe_delete(status_msg)
     except (asyncio.TimeoutError, TimeoutError):
