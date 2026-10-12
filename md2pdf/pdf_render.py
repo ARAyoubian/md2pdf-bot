@@ -463,6 +463,21 @@ async def render_pdf(context, documents, full_html, has_math, has_mermaid, out_p
 
 
 
+async def _new_context_with_retry():
+    """
+    اگر درایور Playwright یا مرورگر در حافظهٔ کم قطع شده باشد، یک بار کامل
+    راه‌اندازی مجدد می‌شود و دوباره تلاش می‌کند.
+    """
+    try:
+        browser = await ensure_browser()
+        return await browser.new_context(service_workers="block")
+    except Exception as exc:
+        logger.warning("Browser context failed (%s); restarting browser once", exc)
+        await close_browser()
+        browser = await ensure_browser()
+        return await browser.new_context(service_workers="block")
+
+
 async def generate_pdf_output(
     md_text,
     output_pdf_path,
@@ -494,8 +509,7 @@ async def generate_pdf_output(
         date_text=persian_date_text() if front else "",
     )
 
-    browser = await ensure_browser()
-    context = await browser.new_context(service_workers="block")
+    context = await _new_context_with_retry()
     documents = {}
     try:
         await context.route("**/*", make_router(documents))
