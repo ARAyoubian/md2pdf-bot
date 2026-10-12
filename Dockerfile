@@ -27,6 +27,8 @@ RUN pip install -r requirements.txt
 
 # لوگو می‌تواند PNG (شفاف) یا JPG باشد؛ هر کدام که وجود داشته باشد کپی می‌شود
 COPY bot.py converters.py medoxin_logo.* ./
+# پوشهٔ فونت‌های اختیاری (BNazanin.ttf را داخل این پوشه بگذارید؛ اگر نبود، فقط وزیرمتن استفاده می‌شود)
+COPY bnazanin/ ./bnazanin/
 
 # دانلود assets (MathJax، Mermaid، فونت‌های Vazirmatn، قالب Word فارسی) هنگام build
 RUN python bot.py --fetch-assets
