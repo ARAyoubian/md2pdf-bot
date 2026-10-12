@@ -122,6 +122,8 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
         }
 
         img { max-width: 100%; height: auto; }
+        /* عکس و توضیح زیرش وسط‌چین */
+        p:has(> img), p:has(> em:only-child) { text-align: center; }
 
         pre, .codehilite {
             background-color: var(--bg-code) !important;
