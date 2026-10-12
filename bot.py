@@ -2683,6 +2683,7 @@ def _latin_report() -> dict:
     sample = "متن (Drug Metabolism) و فاز I و فاز II (CYP3A4) و Abc &amp; def."
     out = apply_latin_spans(sample)
     spans = re.findall(r'<span class="en" dir="ltr">(.*?)</span>', out)
-    return {
-        "spans": len(spans),
-        "bracket_inside_span": any(sp.startswith(("(", ")")) or sp.e
+    bad_edges = ("(", ")")
+    bracket_inside = False
+    for sp in spans:
+        if sp.startswith(bad_edges)
