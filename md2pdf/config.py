@@ -7,7 +7,7 @@ import re
 
 
 
-BOT_VERSION = " r41-vazirmatn-stack"
+BOT_VERSION = "r41-vazirmatn-stack"
 
 
 
@@ -133,7 +133,7 @@ LOGO_CANDIDATES = (BASE_DIR / "medoxin_logo.png", BASE_DIR / "medoxin_logo.jpg")
 ALLOW_REMOTE_IMAGES = os.environ.get("ALLOW_REMOTE_IMAGES", "0") == "1"
 
 
-DEBUG_ERRORS = os.environ.get("DEBUG_ERRORS", "0") == "1"
+DEBUG_ERRORS = os.environ.get("DEBUG_ERRORS", "1") == "1"
 
 
 
