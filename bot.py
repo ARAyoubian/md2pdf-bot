@@ -59,7 +59,7 @@ from telegram.ext import (
     filters,
 )
 
-BOT_VERSION = "r20-static-fonts"
+BOT_VERSION = "r21-direction-rule"
 
 logging.basicConfig(
     format="%(asctime)s %(levelname)s %(name)s: %(message)s", level=logging.INFO
@@ -821,10 +821,10 @@ def build_footer_overlay(total, title, pad, width_mm, height_mm, meta=None):
         show_footer, header = meta[i - 1] if i - 1 < len(meta) else (True, "")
         block = ['<div class="pg">']
         if header:
-            block.append(f'<div class="hd">{html.escape(header)}</div>')
+            block.append(f'<div class="hd" dir="{text_direction(header)}">{html.escape(header)}</div>')
         if show_footer:
             block.append(
-                f'<div class="ft"><span class="ttl" dir="auto">{safe_title}</span>'
+                f'<div class="ft"><span class="ttl" dir="{text_direction(title)}">{safe_title}</span>'
                 f"<span>صفحه {to_persian_digits(i)} از {to_persian_digits(total)}</span></div>"
             )
         block.append("</div>")
@@ -1195,6 +1195,37 @@ ALLOWED_URL_SCHEMES = {"http", "https", "mailto", "data"}
 DIR_AUTO_RE = re.compile(r"<(p|h[1-6]|ul|ol|li|table|blockquote|dl)(?=[\s>])")
 
 
+PERSIAN_CHAR_RE = re.compile(r"[\u0600-\u06FF\u0750-\u077F\uFB50-\uFDFF\uFE70-\uFEFF]")
+LATIN_LETTER_RE = re.compile(r"[A-Za-z]")
+_BLOCK_DIR_RE = re.compile(r"<(p|h[1-6]|li|blockquote|dt|dd|td|th|ul|ol|table)\b([^>]*)>(.*?)</\1>", re.S)
+
+
+def text_direction(text: str) -> str:
+    """
+    قاعدهٔ جهت متن:
+      • اگر حتی یک حرف فارسی/عربی (یا رقم فارسی) در متن باشد → راست‌به‌چپ
+      • فقط اگر متن فقط لاتین باشد → چپ‌به‌راست
+      • اگر حرفی در متن نباشد (مثلاً فقط علامت یا عدد لاتین) → راست‌به‌چپ (پیش‌فرض سند)
+    """
+    if PERSIAN_CHAR_RE.search(text or ""):
+        return "rtl"
+    if LATIN_LETTER_RE.search(text or ""):
+        return "ltr"
+    return "rtl"
+
+
+def apply_block_directions(html_text: str) -> str:
+    """به هر بلوک، جهت را بر اساس متن خودش (با قاعدهٔ text_direction) می‌دهد."""
+
+    def repl(match):
+        tag, attrs, inner = match.group(1), match.group(2), match.group(3)
+        attrs = re.sub(r'\s+dir="[^"]*"', "", attrs)
+        direction = text_direction(_plain_text(inner))
+        return f'<{tag}{attrs} dir="{direction}">{apply_block_directions(inner)}</{tag}>'
+
+    return _BLOCK_DIR_RE.sub(repl, html_text)
+
+
 IRAN_TZ = timezone(timedelta(hours=3, minutes=30))
 PERSIAN_MONTHS = (
     "فروردین", "اردیبهشت", "خرداد", "تیر", "مرداد", "شهریور",
@@ -1281,7 +1312,7 @@ def build_front_matter(title, date_text, headings, toc_pages):
     cover = (
         '<section class="cover">'
         '<div class="cover-kicker">جزوه</div>'
-        f'<div class="cover-title">{html.escape(title or "")}</div>'
+        f'<div class="cover-title" dir="{text_direction(title)}">{html.escape(title or "")}</div>'
         '<div class="cover-line"></div>'
         f'<div class="cover-meta">{html.escape(date_text or "")}</div>'
         "</section>"
@@ -1291,7 +1322,7 @@ def build_front_matter(title, date_text, headings, toc_pages):
         page = (toc_pages or {}).get(h["id"])
         num = to_persian_digits(page + 1) if page is not None else "–"
         rows.append(
-            f'<div class="toc-row toc-l{h["level"]}" dir="auto">'
+            f'<div class="toc-row toc-l{h["level"]}" dir="{text_direction(h["text"])}">'
             f'<a href="#{h["id"]}">{html.escape(h["text"])}</a>'
             f'<span class="toc-dots"></span><span class="toc-num">{num}</span></div>'
         )
@@ -1426,7 +1457,7 @@ def build_html(
     has_math = 'class="arithmatex"' in body
 
     # جهت هر بلوک (راست‌به‌چپ / چپ‌به‌راست) جداگانه از روی اولین حرف قوی تعیین می‌شود
-    body = DIR_AUTO_RE.sub(r'<\1 dir="auto"', body)
+    body = apply_block_directions(body)
 
     for idx, code in enumerate(mermaid_blocks):
         pre = (
