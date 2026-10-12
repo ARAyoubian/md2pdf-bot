@@ -47,8 +47,11 @@ CALLOUT_WORD_LABELS = {
     "WARNING": "⚠️ هشدار:",
     "TIP": "💡 پیشنهاد:",
     "IMPORTANT": "🔥 مهم:",
+    "EXAMPLE": "🩺 مثال بالینی:",
+    "CLINICAL": "🧠 نکته بالینی:",
+    "REVIEW": "❓ سؤال مرور:",
 }
-_CALLOUT_START_RE = re.compile(r"^\s*>\s*\[!(NOTE|WARNING|TIP|IMPORTANT)\]\s*$", re.IGNORECASE)
+_CALLOUT_START_RE = re.compile(r"^\s*>\s*\[!(NOTE|WARNING|TIP|IMPORTANT|EXAMPLE|CLINICAL|REVIEW)\]\s*$", re.IGNORECASE)
 _QUOTE_PREFIX_RE = re.compile(r"^\s*>\s?")
 
 
