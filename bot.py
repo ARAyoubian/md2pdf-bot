@@ -60,7 +60,7 @@ from telegram.ext import (
     filters,
 )
 
-BOT_VERSION = "r30-neutral-gray"
+BOT_VERSION = "r31-visual-polish"
 
 logging.basicConfig(
     format="%(asctime)s %(levelname)s %(name)s: %(message)s", level=logging.INFO
@@ -647,6 +647,39 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
         .toc-dots { flex: 1; border-bottom: 1px dotted #aeb4bb; transform: translateY(-3px); }
         .toc-num { min-width: 28px; text-align: start; }
 
+        /* ───── r31: جلد با قاب رنگی ───── */
+        .cover {
+            border-top: 6px solid var(--accent-color);
+            border-bottom: 6px solid var(--accent-color);
+            padding: 12mm 0;
+        }
+        .cover-logo { width: 62mm; max-width: 70%; }
+        .cover-title { font-size: 36px; font-weight: 800; color: var(--accent-color); }
+        .cover-subtitle { font-size: 16px; font-weight: 400; color: var(--text-muted); margin-bottom: 14px; }
+
+        /* ───── r31: جدول ───── */
+        table {
+            border-collapse: separate;
+            border-spacing: 0;
+            border: 1px solid var(--border-color);
+            border-radius: 8px;
+            box-shadow: none;
+        }
+        th, td { border: none; border-bottom: 1px solid var(--border-color); }
+        th + th, td + td { border-inline-start: 1px solid var(--border-color); }
+        th { border-bottom: 2px solid var(--accent-color); }
+        thead th:first-child { border-start-start-radius: 8px; }
+        thead th:last-child { border-start-end-radius: 8px; }
+        tbody tr:last-child td { border-bottom: none; }
+        tbody tr:last-child td:first-child { border-end-start-radius: 8px; }
+        tbody tr:last-child td:last-child { border-end-end-radius: 8px; }
+        tr:nth-child(even) { background-color: color-mix(in srgb, var(--accent-color) 9%, #ffffff); }
+
+        /* ───── r31: callout ───── */
+        blockquote[class*="callout-"] { border-inline-start-width: 6px; padding: 14px 20px; }
+        blockquote[class*="callout-"] > p:first-child > strong:first-child { font-size: 1em; padding: 3px 14px; }
+        body.print-mode blockquote { border-inline-start-width: 6px !important; }
+
         /* PYGMENTS_INJECTION */
     </style>
     {{SCRIPTS}}
@@ -803,7 +836,7 @@ html, body { margin: 0; padding: 0; }
     font-size: 8.5pt;
     color: #777777;
 }
-.hd { position: absolute; top: 9mm; left: {{PAD}}; right: {{PAD}}; text-align: center; font-family: 'Vazirmatn', 'Noto Sans Arabic', sans-serif; font-size: 8pt; color: #777777; border-bottom: 0.4pt solid #999999; padding-bottom: 2mm; }
+.hd { position: absolute; top: 9mm; left: {{PAD}}; right: {{PAD}}; text-align: center; font-family: 'Vazirmatn', 'Noto Sans Arabic', sans-serif; font-size: 8pt; color: #777777; border-bottom: 0.2pt solid #b0b0b0; padding-bottom: 2mm; }
 .ttl { max-width: 45%; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
 .brand { font-size: 7.5pt; letter-spacing: 0.3px; direction: ltr; }
 </style></head><body>{{PAGES}}</body></html>
