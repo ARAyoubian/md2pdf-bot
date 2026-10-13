@@ -328,6 +328,36 @@ def prepare_markdown(md_text: str) -> str:
 
 
 
+IMAGE_MAX_WIDTH = 1200
+
+
+def shrink_image(mime: str, data: bytes):
+    """عکس را اگر عریض‌تر از IMAGE_MAX_WIDTH باشد، با حفظ نسبت کوچک می‌کند تا حجم PDF و رم کم شود."""
+    try:
+        import io
+        from PIL import Image
+
+        img = Image.open(io.BytesIO(data))
+        if img.width <= IMAGE_MAX_WIDTH:
+            return mime, data
+        ratio = IMAGE_MAX_WIDTH / img.width
+        img = img.resize((IMAGE_MAX_WIDTH, max(1, round(img.height * ratio))), Image.LANCZOS)
+        out = io.BytesIO()
+        if mime == "image/png":
+            img.save(out, "PNG", optimize=True)
+        elif mime == "image/gif":
+            img.save(out, "PNG", optimize=True)
+            return "image/png", out.getvalue()
+        elif mime == "image/webp":
+            img.save(out, "WEBP", quality=85)
+        else:
+            img.convert("RGB").save(out, "JPEG", quality=85, optimize=True)
+            return "image/jpeg", out.getvalue()
+        return mime, out.getvalue()
+    except Exception:
+        return mime, data
+
+
 _PLACEHOLDER_LINE_RE = re.compile(r"^\s*>\s*(?:🖼\ufe0f?\s*)?\[(IMG-\d+)\](.*)$", re.IGNORECASE)
 
 
@@ -354,7 +384,7 @@ def inject_images(md_text: str, images: dict):
         parts = [part.strip() for part in match.group(2).split("|")]
         caption = parts[-1] if len(parts) > 1 else ""
         caption = caption.replace("[", "(").replace("]", ")")
-        mime, data = images[ident]
+        mime, data = shrink_image(*images[ident])
         uri = f"data:{mime};base64," + base64.b64encode(data).decode("ascii")
         out.append("")
         out.append(f"![{caption}]({uri})")
