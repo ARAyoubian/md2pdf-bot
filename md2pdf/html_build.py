@@ -8,7 +8,7 @@ import nh3
 import re
 import secrets
 from md2pdf.config import (ACCENTS, BRAND_FOOTER, BRAND_NAME, DEBUG_ERRORS, LOGO_CANDIDATES)
-from md2pdf.md_preprocess import (MERMAID_FENCE_RE, _separate_callouts, apply_callouts, auto_repair_latex, clean_mermaid_script, normalize_display_math, unescape_escaped_math)
+from md2pdf.md_preprocess import (MERMAID_FENCE_RE, _separate_callouts, apply_callouts, auto_repair_latex, clean_mermaid_script, normalize_display_math, reduce_deep_indent, unescape_escaped_math)
 
 
 
@@ -843,6 +843,7 @@ def build_html(
         return f"\n\n{token}{len(mermaid_blocks) - 1}END\n\n"
 
     md_text = MERMAID_FENCE_RE.sub(stash_mermaid, md_text)
+    md_text = reduce_deep_indent(md_text)
     md_text = _separate_callouts(md_text)
     md_text = unescape_escaped_math(md_text)
     md_text = normalize_display_math(md_text)
