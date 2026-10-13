@@ -311,9 +311,11 @@ def reduce_deep_indent(md_text: str) -> str:
         if in_fence or not line.strip():
             out.append(line)
             continue
-        indent = len(line) - len(line.lstrip(" "))
-        if indent >= 4:
-            line = " " * 2 + line.lstrip(" ")
+        # تب هر کدام معادل ۴ فاصله حساب می‌شود (ویرایشگرهای موبایل معمولاً تب می‌گذارند)
+        lead = line[: len(line) - len(line.lstrip(" \t"))]
+        width = len(lead.replace("\t", "    "))
+        if width >= 4:
+            line = " " * 2 + line.lstrip(" \t")
         out.append(line)
     return "\n".join(out)
 
