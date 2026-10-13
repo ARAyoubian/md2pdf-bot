@@ -93,6 +93,14 @@ def _split_soft_line_breaks(md_text: str) -> str:
     return "\n".join(out)
 
 
+_IMAGE_SYNTAX_RE = re.compile(r"(!\[[^\]\n]*\]\((?:data:[^)\s]+|[^)\s]+)\))")
+
+
+def _docx_image_widths(md_text: str) -> str:
+    """عکس‌ها در Word با عرض ۸۰٪ متن قرار می‌گیرند (تا از تمام عرض صفحه کمی کوچک‌تر باشند)."""
+    return _IMAGE_SYNTAX_RE.sub(lambda m: m.group(1) + "{width=80%}", md_text)
+
+
 def _docx_friendly_markdown(md_text: str) -> str:
     """
     callout های `> [!NOTE]` را به یک برچسب بولد و پاراگراف‌های عادی تبدیل می‌کند.
@@ -134,7 +142,7 @@ def md_to_docx(md_text: str, out_path: str, title: str = "", reference_doc: str 
     if reference_doc and os.path.isfile(reference_doc):
         cmd += ["--reference-doc", reference_doc]
 
-    source = _split_soft_line_breaks(_docx_friendly_markdown(md_text))
+    source = _split_soft_line_breaks(_docx_image_widths(_docx_friendly_markdown(md_text)))
     result = subprocess.run(
         cmd,
         input=source.encode("utf-8"),
