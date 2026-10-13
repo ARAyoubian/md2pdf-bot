@@ -123,6 +123,7 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
 
         img { max-width: 100%; height: auto; }
         .figure { break-inside: avoid; page-break-inside: avoid; }
+        p:has(> img) img { width: 80%; height: auto; }
         /* عکس و توضیح زیرش وسط‌چین */
         p:has(> img), p:has(> em:only-child) { text-align: center; }
 
